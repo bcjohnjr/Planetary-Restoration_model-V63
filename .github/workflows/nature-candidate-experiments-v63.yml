@@ -1,188 +1,90 @@
-name: V63 Canonical FaIR Experiment
+name: V63 Canonical Hector Experiment
 
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 env:
-  PYTHONUNBUFFERED: "1"
-  FAIR_SOURCE_DIR: /tmp/FAIR-v2.2.4
+  V622_COMMIT: "89a0f4ab18df25db3a05d4e39c6db06405456505"
+  FAIR_RUN_ID: "34653255920"
 
 jobs:
-  fair-canonical:
-    name: Canonical FaIR 2.2.4
+  hector-canonical:
+    name: Canonical Hector 3.5.0
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Checkout V63 repository
         uses: actions/checkout@v7
 
-      - name: Restore proven V62.2 validation inputs
-        run: |
-          set -euo pipefail
-
-          V622_DIR="/tmp/V62.2"
-          V622_COMMIT="89a0f4ab18df25db3a05d4e39c6db06405456505"
-
-          rm -rf "$V622_DIR"
-
-          git clone \
-            https://github.com/bcjohnjr/Planetary-Restoration-Version-62.2.git \
-            "$V622_DIR"
-
-          git -C "$V622_DIR" checkout \
-            --detach \
-            "$V622_COMMIT"
-
-          ACTUAL="$(git -C "$V622_DIR" rev-parse HEAD)"
-
-          test "$ACTUAL" = "$V622_COMMIT"
-
-          cp \
-            "$V622_DIR/external_validation_net_co2_trajectory.csv" \
-            .
-
-          cp \
-            "$V622_DIR/run_fair_matched_forcing_v62.py" \
-            .
-
-          test -f external_validation_net_co2_trajectory.csv
-          test -f run_fair_matched_forcing_v62.py
-
-          echo \
-            "f2d58812b8c54bfc52da1dee360ca06f8ccfb888791cf3dc1105bc038ae3a637  external_validation_net_co2_trajectory.csv" \
-            | sha256sum -c -
-
-          echo "Pinned V62.2 validation inputs restored."
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+      - name: Download verified V63 FaIR artifact
+        uses: actions/download-artifact@v8
         with:
-          python-version: "3.12"
+          name: V63-Canonical-FaIR
+          path: fair-artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: bcjohnjr/Planetary-Restoration_model-V63
+          run-id: 34653255920
 
-      - name: Install FaIR workload
+      - name: Verify downloaded FaIR artifact
         run: |
           set -euo pipefail
-
-          python -m pip install --upgrade pip
-
-          python -m pip install \
-            fair==2.2.4 \
-            numpy \
-            pandas \
-            xarray \
-            scipy
-
-          python - <<'PY'
-          import fair
-          import numpy
-          import pandas
-          import xarray
-          import scipy
-
-          print("fair:", fair.__version__)
-          print("numpy:", numpy.__version__)
-          print("pandas:", pandas.__version__)
-          print("xarray:", xarray.__version__)
-          print("scipy:", scipy.__version__)
-
-          assert fair.__version__ == "2.2.4"
-          PY
-
-      - name: Clone pinned official FaIR 2.2.4 source
-        run: |
-          set -euo pipefail
-
-          rm -rf "$FAIR_SOURCE_DIR"
-
-          git clone \
-            --depth 1 \
-            --branch v2.2.4 \
-            https://github.com/OMS-NetZero/FAIR.git \
-            "$FAIR_SOURCE_DIR"
-
-          FAIR_COMMIT="$(
-            git -C "$FAIR_SOURCE_DIR" rev-parse HEAD
-          )"
-
-          echo "FaIR commit: $FAIR_COMMIT"
-
-          test \
-            "$FAIR_COMMIT" = \
-            "ec46fefc8f8c6b560a8b78ab1f4a9a5e04537f79"
 
           test -f \
-            "$FAIR_SOURCE_DIR/examples/data/calibrated_constrained_ensemble/calibrated_constrained_parameters_calibration1.4.1.csv"
-
-          echo "Official FaIR v2.2.4 source verified."
-
-      - name: Generate V63 experiment trajectories
-        run: |
-          set -euo pipefail
-
-          rm -rf nature_experiments
-
-          python \
-            generate_nature_experiment_trajectories_v63.py \
-            --input \
-            external_validation_net_co2_trajectory.csv \
-            --outdir \
-            nature_experiments/trajectories
+            fair-artifact/fair_matched_nonco2_forcing.csv
 
           test -f \
-            nature_experiments/trajectories/canonical_peak15p2.csv
+            fair-artifact/fair_matched_attribution.csv
 
-          echo "Canonical V63 trajectory generated."
+          test -f \
+            fair-artifact/fair_matched_timeseries.csv
 
-      - name: Stage isolated canonical FaIR experiment
-        run: |
-          set -euo pipefail
+          test -f \
+            fair-artifact/fair_matched_summary.json
 
-          rm -rf fair_work
-          mkdir -p fair_work
-
-          cp \
-            nature_experiments/trajectories/canonical_peak15p2.csv \
-            fair_work/external_validation_net_co2_trajectory.csv
-
-          cp \
-            run_fair_matched_forcing_v62.py \
-            fair_work/
-
-          sed -i \
-            's/^END_YEAR = 2300$/END_YEAR = 2183/' \
-            fair_work/run_fair_matched_forcing_v62.py
-
-          grep -q \
-            '^END_YEAR = 2183$' \
-            fair_work/run_fair_matched_forcing_v62.py
-
-          python -m py_compile \
-            fair_work/run_fair_matched_forcing_v62.py
+          test -f \
+            fair-artifact/external_validation_net_co2_trajectory.csv
 
           python - <<'PY'
+          import json
           import pandas as pd
 
-          p = (
-              "fair_work/"
-              "external_validation_net_co2_trajectory.csv"
+          forcing = pd.read_csv(
+              "fair-artifact/fair_matched_nonco2_forcing.csv"
           )
 
-          df = pd.read_csv(p)
+          trajectory = pd.read_csv(
+              "fair-artifact/external_validation_net_co2_trajectory.csv"
+          )
 
-          assert int(df["year"].min()) == 2026
-          assert int(df["year"].max()) == 2183
-          assert len(df) == 158
+          with open(
+              "fair-artifact/fair_matched_summary.json",
+              encoding="utf-8",
+          ) as f:
+              summary = json.load(f)
+
+          assert summary["model"] == "FaIR"
+          assert summary["version"] == "2.2.4"
+          assert summary["configs"] == 841
+
+          assert len(forcing) == 158
+          assert int(forcing["year"].iloc[0]) == 2026
+          assert int(forcing["year"].iloc[-1]) == 2183
+
+          assert len(trajectory) == 158
+          assert int(trajectory["year"].iloc[0]) == 2026
+          assert int(trajectory["year"].iloc[-1]) == 2183
 
           total = float(
-              df["cdr_gtco2"].sum()
+              trajectory["cdr_gtco2"].sum()
           )
 
           peak = float(
-              df["cdr_gtco2"].max()
+              trajectory["cdr_gtco2"].max()
           )
 
           assert abs(
@@ -193,137 +95,6 @@ jobs:
               peak - 15.2
           ) < 1e-9
 
-          print(
-              "Canonical CDR:",
-              total,
-              "GtCO2"
-          )
-
-          print(
-              "Peak CDR:",
-              peak,
-              "GtCO2/yr"
-          )
-          PY
-
-      - name: Run canonical FaIR matched-forcing experiment
-        run: |
-          set -euo pipefail
-
-          cd fair_work
-
-          set -o pipefail
-
-          python \
-            run_fair_matched_forcing_v62.py \
-            2>&1 \
-            | tee FAIR_CANONICAL_CONSOLE.log
-
-      - name: Verify canonical FaIR results
-        run: |
-          set -euo pipefail
-
-          cd fair_work
-
-          python - <<'PY'
-          import json
-          import numpy as np
-          import pandas as pd
-
-          with open(
-              "fair_matched_summary.json",
-              encoding="utf-8",
-          ) as f:
-              summary = json.load(f)
-
-          attr = pd.read_csv(
-              "fair_matched_attribution.csv"
-          )
-
-          forcing = pd.read_csv(
-              "fair_matched_nonco2_forcing.csv"
-          )
-
-          timeseries = pd.read_csv(
-              "fair_matched_timeseries.csv"
-          )
-
-          trajectory = pd.read_csv(
-              "external_validation_net_co2_trajectory.csv"
-          )
-
-          # Model identity
-          assert summary["model"] == "FaIR"
-          assert summary["version"] == "2.2.4"
-          assert summary["configs"] == 841
-
-          # Canonical trajectory
-          canonical_total = float(
-              trajectory["cdr_gtco2"].sum()
-          )
-
-          canonical_peak = float(
-              trajectory["cdr_gtco2"].max()
-          )
-
-          assert abs(
-              canonical_total
-              - 2013.8807318595145
-          ) < 1e-6
-
-          assert abs(
-              canonical_peak
-              - 15.2
-          ) < 1e-9
-
-          assert abs(
-              float(
-                  summary[
-                      "canonical_cdr_2026_2183_gtco2"
-                  ]
-              )
-              - canonical_total
-          ) < 1e-6
-
-          assert abs(
-              float(
-                  summary[
-                      "peak_cdr_2026_2183_gtco2_per_year"
-                  ]
-              )
-              - canonical_peak
-          ) < 1e-9
-
-          # Mass balance
-          assert (
-              float(
-                  summary[
-                      "trajectory_mass_balance_max_abs_gtco2"
-                  ]
-              )
-              < 1e-9
-          )
-
-          # Common 2026 state
-          assert (
-              float(
-                  summary[
-                      "common_state_2026_co2_maxabs_ppm"
-                  ]
-              )
-              <= 1e-6
-          )
-
-          assert (
-              float(
-                  summary[
-                      "common_state_2026_tas_maxabs_c"
-                  ]
-              )
-              <= 1e-6
-          )
-
-          # Forcing-match gates
           tol = float(
               summary[
                   "forcing_match_tolerance_wm2"
@@ -342,175 +113,483 @@ jobs:
               ]
           )
 
-          pair_error = float(
-              summary[
-                  "forcing_match_on_vs_off_max_abs_wm2"
-              ]
-          )
-
           assert on_error <= tol
           assert off_error <= tol
-          assert pair_error <= 2 * tol
-
-          # Output structure
-          assert len(trajectory) == 158
-          assert len(forcing) == 158
-          assert len(timeseries) == 158
-
-          assert int(
-              forcing["year"].iloc[0]
-          ) == 2026
-
-          assert int(
-              forcing["year"].iloc[-1]
-          ) == 2183
-
-          assert int(
-              timeseries["year"].iloc[0]
-          ) == 2026
-
-          assert int(
-              timeseries["year"].iloc[-1]
-          ) == 2183
-
-          # Attribution contains the complete model
-          # time-bound series from 1750 through 2183.
-          assert len(attr) >= 400
-
-          assert int(
-              round(
-                  float(
-                      attr["year"].iloc[-1]
-                  )
-              )
-          ) == 2183
-
-          finite_attr = (
-              attr[
-                  [
-                      "delta_co2_p50_ppm",
-                      "fraction_p50",
-                  ]
-              ]
-              .dropna()
-              .to_numpy(dtype=float)
-          )
-
-          assert np.isfinite(
-              finite_attr
-          ).all()
-
-          final = attr.iloc[-1]
-
-          terminal_cumulative = float(
-              final[
-                  "cumulative_cdr_gtco2"
-              ]
-          )
-
-          terminal_delta = float(
-              final[
-                  "delta_co2_p50_ppm"
-              ]
-          )
-
-          terminal_fraction = float(
-              final[
-                  "fraction_p50"
-              ]
-          )
-
-          # FaIR uses time-bound accounting.
-          # The row labelled 2183 represents the
-          # state after the preceding integration
-          # interval, so this attribution row does
-          # not need to equal the trajectory's full
-          # 2026-2183 cumulative total.
-          assert terminal_cumulative > 0
-          assert terminal_cumulative <= canonical_total
-
-          assert terminal_delta > 0
-          assert terminal_fraction > 0
-
-          print("")
-          print(
-              "======================================"
-          )
-          print(
-              "V63 CANONICAL FAIR EXPERIMENT PASSED"
-          )
-          print(
-              "======================================"
-          )
 
           print(
-              "FaIR configurations:",
-              summary["configs"]
+              "Verified FaIR artifact from run 34653255920"
           )
-
           print(
-              "Canonical cumulative CDR:",
-              canonical_total,
+              "Forcing years:",
+              int(forcing["year"].iloc[0]),
+              "-",
+              int(forcing["year"].iloc[-1]),
+          )
+          print(
+              "Canonical CDR:",
+              total,
               "GtCO2"
           )
-
           print(
-              "Canonical peak CDR:",
-              canonical_peak,
+              "Peak CDR:",
+              peak,
               "GtCO2/yr"
           )
-
           print(
-              "Terminal FaIR year:",
-              float(final["year"])
+              "FaIR ON forcing error:",
+              on_error
           )
-
           print(
-              "Terminal attribution cumulative CDR:",
-              terminal_cumulative,
-              "GtCO2"
-          )
-
-          print(
-              "Terminal median CO2 reduction:",
-              terminal_delta,
-              "ppm"
-          )
-
-          print(
-              "Terminal median atmospheric response:",
-              terminal_fraction
-          )
-
-          print(
-              "ON forcing error:",
-              on_error,
-              "W/m2"
-          )
-
-          print(
-              "OFF forcing error:",
-              off_error,
-              "W/m2"
-          )
-
-          print(
-              "ON-vs-OFF forcing difference:",
-              pair_error,
-              "W/m2"
+              "FaIR OFF forcing error:",
+              off_error
           )
           PY
 
-      - name: Upload canonical FaIR results
+      - name: Restore proven V62.2 Hector script
+        run: |
+          set -euo pipefail
+
+          V622_DIR="/tmp/V62.2"
+
+          rm -rf "$V622_DIR"
+
+          git clone \
+            https://github.com/bcjohnjr/Planetary-Restoration-Version-62.2.git \
+            "$V622_DIR"
+
+          git -C "$V622_DIR" checkout \
+            --detach \
+            "$V622_COMMIT"
+
+          ACTUAL="$(
+            git -C "$V622_DIR" rev-parse HEAD
+          )"
+
+          test "$ACTUAL" = "$V622_COMMIT"
+
+          test -f \
+            "$V622_DIR/run_hector_matched_forcing_v62.R"
+
+          mkdir -p hector_work
+
+          cp \
+            "$V622_DIR/run_hector_matched_forcing_v62.R" \
+            hector_work/run_hector_matched_forcing_v63.R
+
+          cp \
+            fair-artifact/fair_matched_nonco2_forcing.csv \
+            hector_work/
+
+          cp \
+            fair-artifact/external_validation_net_co2_trajectory.csv \
+            hector_work/
+
+          echo "Pinned V62.2 Hector script restored."
+
+      - name: Convert isolated Hector experiment to true 2183 horizon
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path(
+              "hector_work/"
+              "run_hector_matched_forcing_v63.R"
+          )
+
+          text = p.read_text(
+              encoding="utf-8"
+          )
+
+          before = text.count("2300")
+
+          if before == 0:
+              raise SystemExit(
+                  "Expected V62.2 script to contain "
+                  "2300 horizon references."
+              )
+
+          # Every literal 2300 in this isolated script
+          # refers to the old post-2183 extension horizon.
+          # V63 schedule experiments terminate at the
+          # actual canonical pathway boundary of 2183.
+          text = text.replace(
+              "2300",
+              "2183"
+          )
+
+          if "2300" in text:
+              raise SystemExit(
+                  "A 2300 horizon reference remains."
+              )
+
+          p.write_text(
+              text,
+              encoding="utf-8"
+          )
+
+          print(
+              "Converted",
+              before,
+              "2300 horizon references to 2183."
+          )
+          PY
+
+          grep -q \
+            'match_years <- 2027:2183' \
+            hector_work/run_hector_matched_forcing_v63.R
+
+          grep -q \
+            'as.numeric(2026:2183)' \
+            hector_work/run_hector_matched_forcing_v63.R
+
+          if grep -q '2300' \
+            hector_work/run_hector_matched_forcing_v63.R
+          then
+            echo "ERROR: 2300 remains in Hector script"
+            exit 1
+          fi
+
+          echo "V63 Hector horizon patch verified."
+
+      - name: Set up R 4.5.1
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.5.1"
+          use-public-rspm: true
+
+      - name: Install system libraries for Hector
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            libboost-dev \
+            libboost-filesystem-dev \
+            libboost-system-dev
+
+      - name: Install Hector 3.5.0
+        run: |
+          set -euo pipefail
+
+          Rscript -e '
+            install.packages(
+              c(
+                "Rcpp",
+                "BH",
+                "jsonlite"
+              ),
+              repos="https://cloud.r-project.org"
+            )
+          '
+
+          rm -rf /tmp/hector-v3.5.0
+
+          git clone \
+            --depth 1 \
+            --branch v3.5.0 \
+            https://github.com/JGCRI/hector.git \
+            /tmp/hector-v3.5.0
+
+          HECTOR_COMMIT="$(
+            git -C /tmp/hector-v3.5.0 \
+            rev-parse HEAD
+          )"
+
+          echo \
+            "Hector v3.5.0 commit: $HECTOR_COMMIT"
+
+          R CMD INSTALL \
+            --no-multiarch \
+            --with-keep.source \
+            /tmp/hector-v3.5.0
+
+          Rscript - <<'RS'
+          library(hector)
+          library(jsonlite)
+
+          v <- as.character(
+            packageVersion("hector")
+          )
+
+          cat(
+            "Installed Hector version:",
+            v,
+            "\n"
+          )
+
+          stopifnot(
+            v == "3.5.0"
+          )
+          RS
+
+      - name: Verify Hector inputs and R syntax
+        run: |
+          set -euo pipefail
+
+          cd hector_work
+
+          test -f \
+            external_validation_net_co2_trajectory.csv
+
+          test -f \
+            fair_matched_nonco2_forcing.csv
+
+          test -f \
+            run_hector_matched_forcing_v63.R
+
+          Rscript -e '
+            parse(
+              file="run_hector_matched_forcing_v63.R"
+            );
+            cat(
+              "Hector V63 R script parses successfully.\n"
+            )
+          '
+
+          Rscript - <<'RS'
+          traj <- read.csv(
+            "external_validation_net_co2_trajectory.csv",
+            check.names = FALSE
+          )
+
+          forcing <- read.csv(
+            "fair_matched_nonco2_forcing.csv",
+            check.names = FALSE
+          )
+
+          stopifnot(
+            min(traj$year) == 2026
+          )
+
+          stopifnot(
+            max(traj$year) == 2183
+          )
+
+          stopifnot(
+            nrow(traj) == 158
+          )
+
+          stopifnot(
+            min(forcing$year) == 2026
+          )
+
+          stopifnot(
+            max(forcing$year) == 2183
+          )
+
+          stopifnot(
+            nrow(forcing) == 158
+          )
+
+          stopifnot(
+            all(
+              is.finite(
+                forcing$matched_nonco2_forcing_wm2
+              )
+            )
+          )
+
+          cat(
+            "Hector V63 inputs verified.\n"
+          )
+          RS
+
+      - name: Run canonical Hector matched-forcing experiment
+        run: |
+          set -euo pipefail
+
+          cd hector_work
+
+          set -o pipefail
+
+          Rscript \
+            run_hector_matched_forcing_v63.R \
+            2>&1 \
+            | tee HECTOR_CANONICAL_CONSOLE.log
+
+      - name: Verify canonical Hector results
+        run: |
+          set -euo pipefail
+
+          cd hector_work
+
+          test -f \
+            hector_matched_attribution.csv
+
+          test -f \
+            hector_matched_timeseries.csv
+
+          test -f \
+            hector_matched_summary.json
+
+          Rscript - <<'RS'
+          suppressPackageStartupMessages(
+            library(jsonlite)
+          )
+
+          s <- read_json(
+            "hector_matched_summary.json",
+            simplifyVector = TRUE
+          )
+
+          a <- read.csv(
+            "hector_matched_attribution.csv",
+            check.names = FALSE
+          )
+
+          z <- read.csv(
+            "hector_matched_timeseries.csv",
+            check.names = FALSE
+          )
+
+          stopifnot(
+            s$model == "Hector"
+          )
+
+          stopifnot(
+            s$version == "3.5.0"
+          )
+
+          tol <- as.numeric(
+            s$forcing_match_tolerance_wm2
+          )
+
+          on_error <- as.numeric(
+            s$forcing_match_max_abs_on_wm2
+          )
+
+          off_error <- as.numeric(
+            s$forcing_match_max_abs_off_wm2
+          )
+
+          stopifnot(
+            is.finite(tol)
+          )
+
+          stopifnot(
+            is.finite(on_error)
+          )
+
+          stopifnot(
+            is.finite(off_error)
+          )
+
+          stopifnot(
+            on_error <= tol
+          )
+
+          stopifnot(
+            off_error <= tol
+          )
+
+          stopifnot(
+            min(z$year) == 2026
+          )
+
+          stopifnot(
+            max(z$year) == 2183
+          )
+
+          stopifnot(
+            nrow(z) == 158
+          )
+
+          stopifnot(
+            max(a$year) == 2183
+          )
+
+          final <- a[
+            which.max(a$year),
+          ]
+
+          stopifnot(
+            is.finite(
+              final$delta_co2_ppm
+            )
+          )
+
+          stopifnot(
+            is.finite(
+              final$response_fraction
+            )
+          )
+
+          stopifnot(
+            final$delta_co2_ppm > 0
+          )
+
+          stopifnot(
+            final$response_fraction > 0
+          )
+
+          cat("\n")
+          cat(
+            "=======================================\n"
+          )
+          cat(
+            "V63 CANONICAL HECTOR EXPERIMENT PASSED\n"
+          )
+          cat(
+            "=======================================\n"
+          )
+
+          cat(
+            "Hector version:",
+            s$version,
+            "\n"
+          )
+
+          cat(
+            "Terminal year:",
+            final$year,
+            "\n"
+          )
+
+          cat(
+            "Terminal CO2 reduction:",
+            final$delta_co2_ppm,
+            "ppm\n"
+          )
+
+          cat(
+            "Terminal atmospheric response:",
+            final$response_fraction,
+            "\n"
+          )
+
+          cat(
+            "ON forcing error:",
+            on_error,
+            "W/m2\n"
+          )
+
+          cat(
+            "OFF forcing error:",
+            off_error,
+            "W/m2\n"
+          )
+
+          cat(
+            "Tolerance:",
+            tol,
+            "W/m2\n"
+          )
+          RS
+
+      - name: Upload canonical Hector results
         uses: actions/upload-artifact@v7
         with:
-          name: V63-Canonical-FaIR
+          name: V63-Canonical-Hector
           retention-days: 90
           if-no-files-found: error
           path: |
-            fair_work/fair_matched_nonco2_forcing.csv
-            fair_work/fair_matched_attribution.csv
-            fair_work/fair_matched_timeseries.csv
-            fair_work/fair_matched_summary.json
-            fair_work/FAIR_CANONICAL_CONSOLE.log
-            fair_work/external_validation_net_co2_trajectory.csv
+            hector_work/hector_matched_attribution.csv
+            hector_work/hector_matched_timeseries.csv
+            hector_work/hector_matched_summary.json
+            hector_work/HECTOR_CANONICAL_CONSOLE.log
+            hector_work/fair_matched_nonco2_forcing.csv
+            hector_work/external_validation_net_co2_trajectory.csv
+            hector_work/run_hector_matched_forcing_v63.R
