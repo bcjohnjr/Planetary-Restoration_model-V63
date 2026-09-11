@@ -9,7 +9,6 @@ permissions:
 
 env:
   V622_COMMIT: "89a0f4ab18df25db3a05d4e39c6db06405456505"
-  FAIR_RUN_ID: "34653255920"
 
 jobs:
   hector-canonical:
@@ -34,32 +33,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -f \
-            fair-artifact/fair_matched_nonco2_forcing.csv
-
-          test -f \
-            fair-artifact/fair_matched_attribution.csv
-
-          test -f \
-            fair-artifact/fair_matched_timeseries.csv
-
-          test -f \
-            fair-artifact/fair_matched_summary.json
-
-          test -f \
-            fair-artifact/external_validation_net_co2_trajectory.csv
+          test -f fair-artifact/fair_matched_nonco2_forcing.csv
+          test -f fair-artifact/fair_matched_attribution.csv
+          test -f fair-artifact/fair_matched_timeseries.csv
+          test -f fair-artifact/fair_matched_summary.json
+          test -f fair-artifact/external_validation_net_co2_trajectory.csv
 
           python - <<'PY'
+          import csv
           import json
-          import pandas as pd
-
-          forcing = pd.read_csv(
-              "fair-artifact/fair_matched_nonco2_forcing.csv"
-          )
-
-          trajectory = pd.read_csv(
-              "fair-artifact/external_validation_net_co2_trajectory.csv"
-          )
 
           with open(
               "fair-artifact/fair_matched_summary.json",
@@ -67,24 +49,40 @@ jobs:
           ) as f:
               summary = json.load(f)
 
+          with open(
+              "fair-artifact/fair_matched_nonco2_forcing.csv",
+              newline="",
+              encoding="utf-8",
+          ) as f:
+              forcing = list(csv.DictReader(f))
+
+          with open(
+              "fair-artifact/external_validation_net_co2_trajectory.csv",
+              newline="",
+              encoding="utf-8",
+          ) as f:
+              trajectory = list(csv.DictReader(f))
+
           assert summary["model"] == "FaIR"
           assert summary["version"] == "2.2.4"
           assert summary["configs"] == 841
 
           assert len(forcing) == 158
-          assert int(forcing["year"].iloc[0]) == 2026
-          assert int(forcing["year"].iloc[-1]) == 2183
+          assert int(float(forcing[0]["year"])) == 2026
+          assert int(float(forcing[-1]["year"])) == 2183
 
           assert len(trajectory) == 158
-          assert int(trajectory["year"].iloc[0]) == 2026
-          assert int(trajectory["year"].iloc[-1]) == 2183
+          assert int(float(trajectory[0]["year"])) == 2026
+          assert int(float(trajectory[-1]["year"])) == 2183
 
-          total = float(
-              trajectory["cdr_gtco2"].sum()
+          total = sum(
+              float(row["cdr_gtco2"])
+              for row in trajectory
           )
 
-          peak = float(
-              trajectory["cdr_gtco2"].max()
+          peak = max(
+              float(row["cdr_gtco2"])
+              for row in trajectory
           )
 
           assert abs(
@@ -96,34 +94,25 @@ jobs:
           ) < 1e-9
 
           tol = float(
-              summary[
-                  "forcing_match_tolerance_wm2"
-              ]
+              summary["forcing_match_tolerance_wm2"]
           )
 
           on_error = float(
-              summary[
-                  "forcing_match_max_abs_on_wm2"
-              ]
+              summary["forcing_match_max_abs_on_wm2"]
           )
 
           off_error = float(
-              summary[
-                  "forcing_match_max_abs_off_wm2"
-              ]
+              summary["forcing_match_max_abs_off_wm2"]
           )
 
           assert on_error <= tol
           assert off_error <= tol
 
           print(
-              "Verified FaIR artifact from run 34653255920"
+              "Verified FaIR artifact from green run 34653255920"
           )
           print(
-              "Forcing years:",
-              int(forcing["year"].iloc[0]),
-              "-",
-              int(forcing["year"].iloc[-1]),
+              "Forcing horizon: 2026-2183"
           )
           print(
               "Canonical CDR:",
@@ -170,6 +159,7 @@ jobs:
           test -f \
             "$V622_DIR/run_hector_matched_forcing_v62.R"
 
+          rm -rf hector_work
           mkdir -p hector_work
 
           cp \
@@ -186,7 +176,7 @@ jobs:
 
           echo "Pinned V62.2 Hector script restored."
 
-      - name: Convert isolated Hector experiment to true 2183 horizon
+      - name: Patch Hector only for V63 2183 horizon
         run: |
           set -euo pipefail
 
@@ -194,34 +184,104 @@ jobs:
           from pathlib import Path
 
           p = Path(
-              "hector_work/"
-              "run_hector_matched_forcing_v63.R"
+              "hector_work/run_hector_matched_forcing_v63.R"
           )
 
           text = p.read_text(
               encoding="utf-8"
           )
 
-          before = text.count("2300")
+          old_extension = """last <- x[nrow(x), ]
 
-          if before == 0:
+          if (max(x$year) < 2300) {
+
+            yy <- (max(x$year) + 1L):2300L
+
+            ext <- data.frame(
+              year = yy,
+              gross_co2_gtco2 =
+                rep(last$gross_co2_gtco2, length(yy)),
+              permafrost_co2_gtco2 =
+                rep(last$permafrost_co2_gtco2, length(yy)),
+              stored_carbon_reversal_gtco2 =
+                rep(last$stored_carbon_reversal_gtco2, length(yy)),
+              cdr_gtco2 =
+                rep(last$cdr_gtco2, length(yy)),
+              net_co2_gtco2 =
+                rep(last$net_co2_gtco2, length(yy))
+            )
+
+            x <- rbind(
+              x[, names(ext)],
+              ext
+            )
+          }
+
+          yrs <- as.numeric(x$year)"""
+
+          new_extension = """yrs <- as.numeric(x$year)"""
+
+          if old_extension not in text:
               raise SystemExit(
-                  "Expected V62.2 script to contain "
-                  "2300 horizon references."
+                  "Could not locate old 2183-to-2300 "
+                  "trajectory extension block."
               )
 
-          # Every literal 2300 in this isolated script
-          # refers to the old post-2183 extension horizon.
-          # V63 schedule experiments terminate at the
-          # actual canonical pathway boundary of 2183.
           text = text.replace(
-              "2300",
-              "2183"
+              old_extension,
+              new_extension,
+              1,
           )
 
-          if "2300" in text:
-              raise SystemExit(
-                  "A 2300 horizon reference remains."
+          replacements = {
+              "as.numeric(2026:2300)":
+                  "as.numeric(2026:2183)",
+
+              "Extended trajectory must be annual 2026-2300":
+                  "Trajectory must be annual 2026-2183",
+
+              "match_years <- 2027:2300":
+                  "match_years <- 2027:2183",
+
+              "Common non-CO2 forcing target missing/non-finite over 2027-2300":
+                  "Common non-CO2 forcing target missing/non-finite over 2027-2183",
+
+              "run(\n      core,\n      2300\n    )":
+                  "run(\n      core,\n      2183\n    )",
+
+              """yy in c(
+              2040,
+              2100,
+              2156,
+              2184,
+              2200,
+              2300
+            )""":
+                  """yy in c(
+              2040,
+              2100,
+              2156,
+              2183
+            )""",
+
+              "target for 2027-2300.":
+                  "target for 2027-2183.",
+
+              "V62 removal-ON/OFF with FaIR-derived harmonized":
+                  "V63 canonical removal-ON/OFF with FaIR-derived harmonized",
+          }
+
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(
+                      "Required patch target not found:\n"
+                      + old
+                  )
+
+              text = text.replace(
+                  old,
+                  new,
+                  1,
               )
 
           p.write_text(
@@ -230,9 +290,7 @@ jobs:
           )
 
           print(
-              "Converted",
-              before,
-              "2300 horizon references to 2183."
+              "V63 Hector horizon patch completed."
           )
           PY
 
@@ -244,14 +302,19 @@ jobs:
             'as.numeric(2026:2183)' \
             hector_work/run_hector_matched_forcing_v63.R
 
-          if grep -q '2300' \
+          grep -q \
+            '2183' \
+            hector_work/run_hector_matched_forcing_v63.R
+
+          if grep -q \
+            'match_years <- 2027:2300' \
             hector_work/run_hector_matched_forcing_v63.R
           then
-            echo "ERROR: 2300 remains in Hector script"
+            echo "ERROR: old forcing horizon remains"
             exit 1
           fi
 
-          echo "V63 Hector horizon patch verified."
+          echo "V63 Hector horizon verified."
 
       - name: Set up R 4.5.1
         uses: r-lib/actions/setup-r@v2
@@ -307,8 +370,13 @@ jobs:
             /tmp/hector-v3.5.0
 
           Rscript - <<'RS'
-          library(hector)
-          library(jsonlite)
+          suppressPackageStartupMessages(
+            library(hector)
+          )
+
+          suppressPackageStartupMessages(
+            library(jsonlite)
+          )
 
           v <- as.character(
             packageVersion("hector")
@@ -361,6 +429,10 @@ jobs:
           )
 
           stopifnot(
+            nrow(traj) == 158
+          )
+
+          stopifnot(
             min(traj$year) == 2026
           )
 
@@ -369,7 +441,7 @@ jobs:
           )
 
           stopifnot(
-            nrow(traj) == 158
+            nrow(forcing) == 158
           )
 
           stopifnot(
@@ -381,19 +453,74 @@ jobs:
           )
 
           stopifnot(
-            nrow(forcing) == 158
-          )
-
-          stopifnot(
             all(
               is.finite(
-                forcing$matched_nonco2_forcing_wm2
+                forcing$
+                  matched_nonco2_forcing_wm2
               )
             )
           )
 
+          mass <- (
+            traj$gross_co2_gtco2 +
+            traj$permafrost_co2_gtco2 +
+            traj$stored_carbon_reversal_gtco2 -
+            traj$cdr_gtco2
+          )
+
+          mass_error <- max(
+            abs(
+              mass -
+              traj$net_co2_gtco2
+            )
+          )
+
+          stopifnot(
+            mass_error < 1e-9
+          )
+
+          total <- sum(
+            traj$cdr_gtco2
+          )
+
+          peak <- max(
+            traj$cdr_gtco2
+          )
+
+          stopifnot(
+            abs(
+              total -
+              2013.8807318595145
+            ) < 1e-6
+          )
+
+          stopifnot(
+            abs(
+              peak -
+              15.2
+            ) < 1e-9
+          )
+
           cat(
-            "Hector V63 inputs verified.\n"
+            "Hector inputs verified.\n"
+          )
+
+          cat(
+            "Mass-balance error:",
+            mass_error,
+            "\n"
+          )
+
+          cat(
+            "Canonical CDR:",
+            total,
+            "GtCO2\n"
+          )
+
+          cat(
+            "Peak CDR:",
+            peak,
+            "GtCO2/yr\n"
           )
           RS
 
@@ -416,14 +543,9 @@ jobs:
 
           cd hector_work
 
-          test -f \
-            hector_matched_attribution.csv
-
-          test -f \
-            hector_matched_timeseries.csv
-
-          test -f \
-            hector_matched_summary.json
+          test -f hector_matched_attribution.csv
+          test -f hector_matched_timeseries.csv
+          test -f hector_matched_summary.json
 
           Rscript - <<'RS'
           suppressPackageStartupMessages(
@@ -451,6 +573,46 @@ jobs:
 
           stopifnot(
             s$version == "3.5.0"
+          )
+
+          stopifnot(
+            nrow(a) == 158
+          )
+
+          stopifnot(
+            min(a$year) == 2026
+          )
+
+          stopifnot(
+            max(a$year) == 2183
+          )
+
+          stopifnot(
+            nrow(z) == 158
+          )
+
+          stopifnot(
+            min(z$year) == 2026
+          )
+
+          stopifnot(
+            max(z$year) == 2183
+          )
+
+          required_attr <- c(
+            "year",
+            "co2_on_ppm",
+            "co2_off_ppm",
+            "delta_co2_ppm",
+            "cumulative_cdr_gtco2",
+            "apparent_response_fraction"
+          )
+
+          stopifnot(
+            all(
+              required_attr %in%
+              names(a)
+            )
           )
 
           tol <- as.numeric(
@@ -486,43 +648,86 @@ jobs:
           )
 
           stopifnot(
-            min(z$year) == 2026
+            as.numeric(
+              s$common_state_2026_co2_abs_error_ppm
+            ) <= 1e-8
           )
 
           stopifnot(
-            max(z$year) == 2183
-          )
-
-          stopifnot(
-            nrow(z) == 158
-          )
-
-          stopifnot(
-            max(a$year) == 2183
+            as.numeric(
+              s$common_state_2026_tas_abs_error_c
+            ) <= 1e-8
           )
 
           final <- a[
-            which.max(a$year),
+            a$year == 2183,
           ]
 
           stopifnot(
+            nrow(final) == 1
+          )
+
+          terminal_delta <- as.numeric(
+            final$delta_co2_ppm
+          )
+
+          terminal_fraction <- as.numeric(
+            final$apparent_response_fraction
+          )
+
+          terminal_cdr <- as.numeric(
+            final$cumulative_cdr_gtco2
+          )
+
+          stopifnot(
             is.finite(
-              final$delta_co2_ppm
+              terminal_delta
             )
           )
 
           stopifnot(
             is.finite(
-              final$response_fraction
+              terminal_fraction
             )
           )
 
           stopifnot(
-            final$delta_co2_ppm > 0
+            is.finite(
+              terminal_cdr
+            )
           )
 
           stopifnot(
-            final$response_fraction > 0
+            terminal_delta > 0
+          )
+
+          stopifnot(
+            terminal_fraction > 0
+          )
+
+          stopifnot(
+            abs(
+              terminal_cdr -
+              2013.8807318595145
+            ) < 1e-6
+          )
+
+          stopifnot(
+            abs(
+              as.numeric(
+                s$canonical_cdr_2026_2183_gtco2
+              ) -
+              2013.8807318595145
+            ) < 1e-6
+          )
+
+          stopifnot(
+            abs(
+              as.numeric(
+                s$peak_cdr_2026_2183_gtco2_per_year
+              ) -
+              15.2
+            ) < 1e-9
           )
 
           cat("\n")
@@ -549,14 +754,20 @@ jobs:
           )
 
           cat(
+            "Cumulative CDR:",
+            terminal_cdr,
+            "GtCO2\n"
+          )
+
+          cat(
             "Terminal CO2 reduction:",
-            final$delta_co2_ppm,
+            terminal_delta,
             "ppm\n"
           )
 
           cat(
             "Terminal atmospheric response:",
-            final$response_fraction,
+            terminal_fraction,
             "\n"
           )
 
