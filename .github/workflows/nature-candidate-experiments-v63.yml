@@ -1,4 +1,4 @@
-     name: V63 Canonical FaIR Experiment
+name: V63 Canonical FaIR Experiment
 
 on:
   workflow_dispatch:
@@ -38,6 +38,7 @@ jobs:
             "$V622_COMMIT"
 
           ACTUAL="$(git -C "$V622_DIR" rev-parse HEAD)"
+
           test "$ACTUAL" = "$V622_COMMIT"
 
           cp \
@@ -172,12 +173,17 @@ jobs:
 
           df = pd.read_csv(p)
 
-          assert int(df.year.min()) == 2026
-          assert int(df.year.max()) == 2183
+          assert int(df["year"].min()) == 2026
+          assert int(df["year"].max()) == 2183
           assert len(df) == 158
 
-          total = float(df.cdr_gtco2.sum())
-          peak = float(df.cdr_gtco2.max())
+          total = float(
+              df["cdr_gtco2"].sum()
+          )
+
+          peak = float(
+              df["cdr_gtco2"].max()
+          )
 
           assert abs(
               total - 2013.8807318595145
@@ -194,7 +200,7 @@ jobs:
           )
 
           print(
-              "Peak:",
+              "Peak CDR:",
               peak,
               "GtCO2/yr"
           )
@@ -246,10 +252,12 @@ jobs:
               "external_validation_net_co2_trajectory.csv"
           )
 
+          # Model identity
           assert summary["model"] == "FaIR"
           assert summary["version"] == "2.2.4"
           assert summary["configs"] == 841
 
+          # Canonical trajectory
           canonical_total = float(
               trajectory["cdr_gtco2"].sum()
           )
@@ -269,40 +277,53 @@ jobs:
           ) < 1e-9
 
           assert abs(
-              summary[
-                  "canonical_cdr_2026_2183_gtco2"
-              ]
+              float(
+                  summary[
+                      "canonical_cdr_2026_2183_gtco2"
+                  ]
+              )
               - canonical_total
           ) < 1e-6
 
           assert abs(
-              summary[
-                  "peak_cdr_2026_2183_gtco2_per_year"
-              ]
+              float(
+                  summary[
+                      "peak_cdr_2026_2183_gtco2_per_year"
+                  ]
+              )
               - canonical_peak
           ) < 1e-9
 
+          # Mass balance
           assert (
-              summary[
-                  "trajectory_mass_balance_max_abs_gtco2"
-              ]
+              float(
+                  summary[
+                      "trajectory_mass_balance_max_abs_gtco2"
+                  ]
+              )
               < 1e-9
           )
 
+          # Common 2026 state
           assert (
-              summary[
-                  "common_state_2026_co2_maxabs_ppm"
-              ]
+              float(
+                  summary[
+                      "common_state_2026_co2_maxabs_ppm"
+                  ]
+              )
               <= 1e-6
           )
 
           assert (
-              summary[
-                  "common_state_2026_tas_maxabs_c"
-              ]
+              float(
+                  summary[
+                      "common_state_2026_tas_maxabs_c"
+                  ]
+              )
               <= 1e-6
           )
 
+          # Forcing-match gates
           tol = float(
               summary[
                   "forcing_match_tolerance_wm2"
@@ -331,6 +352,7 @@ jobs:
           assert off_error <= tol
           assert pair_error <= 2 * tol
 
+          # Output structure
           assert len(trajectory) == 158
           assert len(forcing) == 158
           assert len(timeseries) == 158
@@ -351,10 +373,16 @@ jobs:
               timeseries["year"].iloc[-1]
           ) == 2183
 
-          assert len(attr) > 400
+          # Attribution contains the complete model
+          # time-bound series from 1750 through 2183.
+          assert len(attr) >= 400
 
           assert int(
-              round(float(attr["year"].iloc[-1]))
+              round(
+                  float(
+                      attr["year"].iloc[-1]
+                  )
+              )
           ) == 2183
 
           finite_attr = (
@@ -374,41 +402,35 @@ jobs:
 
           final = attr.iloc[-1]
 
-          assert (
-              float(
-                  final[
-                      "cumulative_cdr_gtco2"
-                  ]
-              )
-              > 0
+          terminal_cumulative = float(
+              final[
+                  "cumulative_cdr_gtco2"
+              ]
           )
 
-          assert (
-              float(
-                  final[
-                      "cumulative_cdr_gtco2"
-                  ]
-              )
-              <= canonical_total
+          terminal_delta = float(
+              final[
+                  "delta_co2_p50_ppm"
+              ]
           )
 
-          assert (
-              float(
-                  final[
-                      "delta_co2_p50_ppm"
-                  ]
-              )
-              > 0
+          terminal_fraction = float(
+              final[
+                  "fraction_p50"
+              ]
           )
 
-          assert (
-              float(
-                  final[
-                      "fraction_p50"
-                  ]
-              )
-              > 0
-          )
+          # FaIR uses time-bound accounting.
+          # The row labelled 2183 represents the
+          # state after the preceding integration
+          # interval, so this attribution row does
+          # not need to equal the trajectory's full
+          # 2026-2183 cumulative total.
+          assert terminal_cumulative > 0
+          assert terminal_cumulative <= canonical_total
+
+          assert terminal_delta > 0
+          assert terminal_fraction > 0
 
           print("")
           print(
@@ -440,33 +462,42 @@ jobs:
 
           print(
               "Terminal FaIR year:",
-              final["year"]
+              float(final["year"])
+          )
+
+          print(
+              "Terminal attribution cumulative CDR:",
+              terminal_cumulative,
+              "GtCO2"
           )
 
           print(
               "Terminal median CO2 reduction:",
-              final["delta_co2_p50_ppm"],
+              terminal_delta,
               "ppm"
           )
 
           print(
-              "Terminal median response fraction:",
-              final["fraction_p50"]
+              "Terminal median atmospheric response:",
+              terminal_fraction
           )
 
           print(
               "ON forcing error:",
-              on_error
+              on_error,
+              "W/m2"
           )
 
           print(
               "OFF forcing error:",
-              off_error
+              off_error,
+              "W/m2"
           )
 
           print(
               "ON-vs-OFF forcing difference:",
-              pair_error
+              pair_error,
+              "W/m2"
           )
           PY
 
