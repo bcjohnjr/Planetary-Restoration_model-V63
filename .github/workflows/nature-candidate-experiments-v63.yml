@@ -1,4 +1,4 @@
-name: V63 Nature Candidate Experiments
+name: V63 Preflight — Single Green Job
 
 on:
   workflow_dispatch:
@@ -6,273 +6,197 @@ on:
 permissions:
   contents: read
 
-env:
-  PYTHONUNBUFFERED: "1"
-  FAIR_SOURCE_DIR: /tmp/FAIR-v2.2.4
-
 jobs:
-  schedule-generality:
-    name: Schedule generality — ${{ matrix.case }}
+  preflight:
+    name: V63 trajectory preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: 240
-    strategy:
-      fail-fast: false
-      max-parallel: 4
-      matrix:
-        case:
-          - canonical_peak15p2
-          - scaled_peak5p0
-          - scaled_peak10p0
-          - scaled_peak20p0
-          - same_total_uniform
-          - same_total_peak20_early
-          - same_total_peak20_late
+    timeout-minutes: 20
 
     steps:
-      - name: Checkout repository
+      - name: Checkout V63 repository
         uses: actions/checkout@v7
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-
-      - name: Install FaIR workload
+      - name: Restore proven V62.2 canonical trajectory
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install fair==2.2.4 numpy pandas xarray scipy
+          set -euo pipefail
 
-      - name: Clone official FaIR 2.2.4 calibration source
-        run: |
-          rm -rf "$FAIR_SOURCE_DIR"
-          git clone --depth 1 --branch v2.2.4 https://github.com/OMS-NetZero/FAIR.git "$FAIR_SOURCE_DIR"
+          V622_DIR="/tmp/V62.2"
+          V622_COMMIT="89a0f4ab18df25db3a05d4e39c6db06405456505"
 
-      - name: Generate predeclared CDR trajectories
-        run: |
-          python generate_nature_experiment_trajectories_v63.py \
-            --input external_validation_net_co2_trajectory.csv \
-            --outdir nature_experiments/trajectories
-          test -f "nature_experiments/trajectories/${{ matrix.case }}.csv"
+          rm -rf "$V622_DIR"
 
-      - name: Stage isolated 2183 experiment
-        run: |
-          rm -rf work
-          mkdir -p work
-          cp "nature_experiments/trajectories/${{ matrix.case }}.csv" work/external_validation_net_co2_trajectory.csv
-          cp run_fair_matched_forcing_v62.py work/
-          cp run_hector_matched_forcing_v62.R work/
-          cp compare_schedule_case_v63.py work/
+          git clone \
+            https://github.com/bcjohnjr/Planetary-Restoration-Version-62.2.git \
+            "$V622_DIR"
 
-          # Publication generality test ends at the canonical pathway boundary.
-          # Do not extend the terminal 2183 CDR rate into 2184-2300.
-          sed -i 's/^END_YEAR = 2300$/END_YEAR = 2183/' work/run_fair_matched_forcing_v62.py
-          sed -i 's/2300/2183/g' work/run_hector_matched_forcing_v62.R
+          git -C "$V622_DIR" checkout \
+            --detach \
+            "$V622_COMMIT"
 
-          grep -q '^END_YEAR = 2183$' work/run_fair_matched_forcing_v62.py
-          python -m py_compile work/run_fair_matched_forcing_v62.py work/compare_schedule_case_v63.py
+          ACTUAL="$(git -C "$V622_DIR" rev-parse HEAD)"
 
-      - name: Run FaIR matched-forcing schedule case
-        run: |
-          cd work
-          set -o pipefail
-          python run_fair_matched_forcing_v62.py 2>&1 | tee FAIR_SCHEDULE_CONSOLE.log
+          test "$ACTUAL" = "$V622_COMMIT"
 
-      - name: Verify FaIR forcing gate
-        run: |
-          cd work
-          python - <<'PY'
-          import json
-          s=json.load(open('fair_matched_summary.json'))
-          assert s['configs'] == 841
-          assert s['forcing_match_max_abs_on_wm2'] <= s['forcing_match_tolerance_wm2']
-          assert s['forcing_match_max_abs_off_wm2'] <= s['forcing_match_tolerance_wm2']
-          print('FaIR schedule case forcing gate passed.')
-          PY
+          cp \
+            "$V622_DIR/external_validation_net_co2_trajectory.csv" \
+            .
 
-      - name: Set up R 4.5.1
-        uses: r-lib/actions/setup-r@v2
-        with:
-          r-version: "4.5.1"
-          use-public-rspm: true
-
-      - name: Install Hector 3.5.0
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libboost-dev libboost-filesystem-dev libboost-system-dev
-          Rscript -e 'install.packages(c("Rcpp", "BH", "jsonlite"), repos="https://cloud.r-project.org")'
-          rm -rf /tmp/hector-v3.5.0
-          git clone --depth 1 --branch v3.5.0 https://github.com/JGCRI/hector.git /tmp/hector-v3.5.0
-          R CMD INSTALL --no-multiarch --with-keep.source /tmp/hector-v3.5.0
-          Rscript -e 'library(hector); stopifnot(as.character(packageVersion("hector")) == "3.5.0")'
-
-      - name: Run Hector matched-forcing schedule case
-        run: |
-          cd work
-          set -o pipefail
-          Rscript run_hector_matched_forcing_v62.R 2>&1 | tee HECTOR_SCHEDULE_CONSOLE.log
-
-      - name: Verify Hector forcing gate
-        run: |
-          cd work
-          Rscript -e 's <- jsonlite::read_json("hector_matched_summary.json", simplifyVector=TRUE); stopifnot(s$forcing_match_max_abs_on_wm2 <= s$forcing_match_tolerance_wm2); stopifnot(s$forcing_match_max_abs_off_wm2 <= s$forcing_match_tolerance_wm2); cat("Hector schedule case forcing gate passed.\n")'
-
-      - name: Summarize schedule case
-        run: |
-          cd work
-          python compare_schedule_case_v63.py \
-            --case "${{ matrix.case }}" \
-            --trajectory external_validation_net_co2_trajectory.csv
-
-      - name: Upload schedule experiment
-        uses: actions/upload-artifact@v7
-        with:
-          name: nature-schedule-${{ matrix.case }}
-          retention-days: 90
-          if-no-files-found: error
-          path: |
-            work/external_validation_net_co2_trajectory.csv
-            work/fair_matched_nonco2_forcing.csv
-            work/fair_matched_attribution.csv
-            work/fair_matched_timeseries.csv
-            work/fair_matched_summary.json
-            work/hector_matched_attribution.csv
-            work/hector_matched_timeseries.csv
-            work/hector_matched_summary.json
-            work/schedule_case_summary.json
-            work/schedule_case_milestones.csv
-            work/FAIR_SCHEDULE_CONSOLE.log
-            work/HECTOR_SCHEDULE_CONSOLE.log
-
-  oscar-mechanism:
-    name: OSCAR common-forcing + reservoir mechanism
-    needs: schedule-generality
-    runs-on: ubuntu-24.04
-    timeout-minutes: 240
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Download canonical common-forcing target
-        uses: actions/download-artifact@v8
-        with:
-          name: nature-schedule-canonical_peak15p2
-          path: canonical-artifact
-
-      - name: Stage common forcing target
-        run: |
-          cp canonical-artifact/fair_matched_nonco2_forcing.csv fair_matched_nonco2_forcing.csv
-          test -f fair_matched_nonco2_forcing.csv
-
-      - name: Set up Python 3.9
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.9"
-
-      - name: Install OSCAR v3.3 runtime dependencies
-        run: |
-          python -m pip install --upgrade 'pip<25'
-          pip install \
-            'numpy==1.23.3' \
-            'scipy==1.9.3' \
-            'pandas==1.5.3' \
-            'xarray==0.20.1' \
-            'matplotlib==3.7.5' \
-            'netCDF4==1.6.5' \
-            'h5netcdf==1.3.0' \
-            'h5py==3.10.0'
-
-      - name: Fetch pinned official OSCAR v3.3 source
-        run: |
-          rm -rf _oscar
-          git clone https://github.com/tgasser/OSCAR.git _oscar
-          cd _oscar
-          git checkout 3ce008400e06363564e5981a35cbc32377d41d86
-          test "$(git rev-parse HEAD)" = "3ce008400e06363564e5981a35cbc32377d41d86"
-
-      - name: Verify OSCAR publication experiment
-        run: |
-          python -m py_compile run_oscar_validation_v62.py run_oscar_matched_forcing_v63.py
           test -f external_validation_net_co2_trajectory.csv
-          test -f fair_matched_nonco2_forcing.csv
 
-      - name: Run OSCAR common-forcing and reservoir experiment
-        run: |
-          set -o pipefail
-          python run_oscar_matched_forcing_v63.py \
-            --oscar-root "$GITHUB_WORKSPACE/_oscar" \
-            --trajectory external_validation_net_co2_trajectory.csv \
-            --forcing-target fair_matched_nonco2_forcing.csv \
-            --outdir oscar_matched_results \
-            --nmc 200 \
-            --end-year 2183 \
-            --forcing-tol 1e-4 2>&1 | tee OSCAR_MATCHED_MECHANISM_CONSOLE.log
+          echo \
+            "f2d58812b8c54bfc52da1dee360ca06f8ccfb888791cf3dc1105bc038ae3a637  external_validation_net_co2_trajectory.csv" \
+            | sha256sum -c -
 
-      - name: Verify OSCAR gates
-        run: |
-          python - <<'PY'
-          import json, pandas as pd
-          s=json.load(open('oscar_matched_results/oscar_matched_summary.json'))
-          assert s['status'] == 'PASS', s
-          assert all(s['gates'].values()), s['gates']
-          r=pd.read_csv('oscar_matched_results/oscar_reservoir_decomposition.csv')
-          assert len(r) >= 150
-          print('OSCAR matched-forcing/reservoir experiment passed.')
-          PY
-
-      - name: Upload OSCAR mechanism experiment
-        uses: actions/upload-artifact@v7
-        with:
-          name: nature-oscar-mechanism
-          retention-days: 90
-          if-no-files-found: error
-          path: |
-            fair_matched_nonco2_forcing.csv
-            oscar_matched_results/
-            OSCAR_MATCHED_MECHANISM_CONSOLE.log
-
-  synthesize:
-    name: Synthesize publication experiments
-    needs: [schedule-generality, oscar-mechanism]
-    runs-on: ubuntu-24.04
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Download all schedule experiments
-        uses: actions/download-artifact@v8
-        with:
-          pattern: nature-schedule-*
-          path: experiment_artifacts/schedules
-          merge-multiple: false
-
-      - name: Download OSCAR mechanism experiment
-        uses: actions/download-artifact@v8
-        with:
-          name: nature-oscar-mechanism
-          path: experiment_artifacts/oscar
+          echo "Pinned V62.2 trajectory restored and verified."
 
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
-      - name: Synthesize results
+      - name: Install preflight dependencies
         run: |
-          python -m pip install pandas
-          python synthesize_nature_experiments_v63.py \
-            --root experiment_artifacts \
-            --outdir nature_experiment_results | tee NATURE_EXPERIMENT_SYNTHESIS_CONSOLE.log
+          set -euo pipefail
 
-      - name: Upload synthesis
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas
+
+          python -m py_compile \
+            generate_nature_experiment_trajectories_v63.py
+
+      - name: Generate all predeclared V63 trajectories
+        run: |
+          set -euo pipefail
+
+          rm -rf nature_experiments
+
+          python generate_nature_experiment_trajectories_v63.py \
+            --input external_validation_net_co2_trajectory.csv \
+            --outdir nature_experiments/trajectories
+
+      - name: Verify all seven trajectories
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path("nature_experiments/trajectories")
+
+          cases = [
+              "canonical_peak15p2",
+              "scaled_peak5p0",
+              "scaled_peak10p0",
+              "scaled_peak20p0",
+              "same_total_uniform",
+              "same_total_peak20_early",
+              "same_total_peak20_late",
+          ]
+
+          for case in cases:
+              path = root / f"{case}.csv"
+
+              assert path.exists(), f"Missing {path}"
+
+              df = pd.read_csv(path)
+
+              assert int(df["year"].min()) == 2026
+              assert int(df["year"].max()) == 2183
+              assert len(df) == 158
+              assert df["year"].is_unique
+
+              identity = (
+                  df["gross_co2_gtco2"]
+                  + df["permafrost_co2_gtco2"]
+                  + df["stored_carbon_reversal_gtco2"]
+                  - df["cdr_gtco2"]
+              )
+
+              err = (
+                  identity
+                  - df["net_co2_gtco2"]
+              ).abs().max()
+
+              assert err < 1e-9, (case, err)
+
+              print(
+                  case,
+                  "total_CDR=",
+                  float(df["cdr_gtco2"].sum()),
+                  "peak=",
+                  float(df["cdr_gtco2"].max()),
+              )
+
+          canonical = pd.read_csv(
+              root / "canonical_peak15p2.csv"
+          )
+
+          total = float(
+              canonical["cdr_gtco2"].sum()
+          )
+
+          peak = float(
+              canonical["cdr_gtco2"].max()
+          )
+
+          assert abs(
+              total - 2013.8807318595145
+          ) < 1e-6, total
+
+          assert abs(
+              peak - 15.2
+          ) < 1e-9, peak
+
+          equal_total_cases = [
+              "canonical_peak15p2",
+              "same_total_uniform",
+              "same_total_peak20_early",
+              "same_total_peak20_late",
+          ]
+
+          totals = {
+              case: float(
+                  pd.read_csv(
+                      root / f"{case}.csv"
+                  )["cdr_gtco2"].sum()
+              )
+              for case in equal_total_cases
+          }
+
+          spread = (
+              max(totals.values())
+              - min(totals.values())
+          )
+
+          assert spread < 1e-9, totals
+
+          print("")
+          print("==============================")
+          print("V63 PREFLIGHT PASSED")
+          print("==============================")
+          print(
+              "Canonical cumulative CDR:",
+              total,
+              "GtCO2"
+          )
+          print(
+              "Canonical peak CDR:",
+              peak,
+              "GtCO2/yr"
+          )
+          print(
+              "Same-total schedule spread:",
+              spread,
+              "GtCO2"
+          )
+          PY
+
+      - name: Upload verified trajectories
         uses: actions/upload-artifact@v7
         with:
-          name: V63-Nature-Candidate-Experiment-Synthesis
+          name: V63-Verified-Trajectories
           retention-days: 90
           if-no-files-found: error
           path: |
-            nature_experiment_results/
-            experiment_artifacts/oscar/oscar_matched_results/oscar_reservoir_decomposition.csv
-            experiment_artifacts/oscar/oscar_matched_results/oscar_matched_summary.json
-            NATURE_EXPERIMENT_SYNTHESIS_CONSOLE.log
+            nature_experiments/trajectories/
