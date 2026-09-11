@@ -1,4 +1,4 @@
-name: V63 Canonical Hector Experiment
+name: V63 Canonical OSCAR Experiment
 
 on:
   workflow_dispatch:
@@ -9,12 +9,14 @@ permissions:
 
 env:
   V622_COMMIT: "89a0f4ab18df25db3a05d4e39c6db06405456505"
+  OSCAR_COMMIT: "3ce008400e06363564e5981a35cbc32377d41d86"
+  FAIR_RUN_ID: "34653255920"
 
 jobs:
-  hector-canonical:
-    name: Canonical Hector 3.5.0
+  oscar-canonical:
+    name: Canonical OSCAR v3.3
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 240
 
     steps:
       - name: Checkout V63 repository
@@ -27,7 +29,7 @@ jobs:
           path: fair-artifact
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: bcjohnjr/Planetary-Restoration_model-V63
-          run-id: 34653255920
+          run-id: ${{ env.FAIR_RUN_ID }}
 
       - name: Verify downloaded FaIR artifact
         run: |
@@ -42,6 +44,7 @@ jobs:
           python - <<'PY'
           import csv
           import json
+          import math
 
           with open(
               "fair-artifact/fair_matched_summary.json",
@@ -68,12 +71,14 @@ jobs:
           assert summary["configs"] == 841
 
           assert len(forcing) == 158
-          assert int(float(forcing[0]["year"])) == 2026
-          assert int(float(forcing[-1]["year"])) == 2183
+          assert [int(float(r["year"])) for r in forcing] == list(
+              range(2026, 2184)
+          )
 
           assert len(trajectory) == 158
-          assert int(float(trajectory[0]["year"])) == 2026
-          assert int(float(trajectory[-1]["year"])) == 2183
+          assert [int(float(r["year"])) for r in trajectory] == list(
+              range(2026, 2184)
+          )
 
           total = sum(
               float(row["cdr_gtco2"])
@@ -93,6 +98,28 @@ jobs:
               peak - 15.2
           ) < 1e-9
 
+          mass_error = max(
+              abs(
+                  (
+                      float(row["gross_co2_gtco2"])
+                      + float(row["permafrost_co2_gtco2"])
+                      + float(row["stored_carbon_reversal_gtco2"])
+                      - float(row["cdr_gtco2"])
+                  )
+                  - float(row["net_co2_gtco2"])
+              )
+              for row in trajectory
+          )
+
+          assert mass_error < 1e-9
+
+          target = [
+              float(row["matched_nonco2_forcing_wm2"])
+              for row in forcing
+          ]
+
+          assert all(math.isfinite(x) for x in target)
+
           tol = float(
               summary["forcing_match_tolerance_wm2"]
           )
@@ -111,21 +138,23 @@ jobs:
           print(
               "Verified FaIR artifact from green run 34653255920"
           )
-
           print(
               "Canonical CDR:",
               total,
               "GtCO2"
           )
-
           print(
               "Peak CDR:",
               peak,
               "GtCO2/yr"
           )
+          print(
+              "Trajectory mass-balance error:",
+              mass_error
+          )
           PY
 
-      - name: Restore proven V62.2 Hector script
+      - name: Restore proven V62.2 OSCAR validation base
         run: |
           set -euo pipefail
 
@@ -148,724 +177,459 @@ jobs:
           test "$ACTUAL" = "$V622_COMMIT"
 
           test -f \
-            "$V622_DIR/run_hector_matched_forcing_v62.R"
-
-          rm -rf hector_work
-          mkdir -p hector_work
+            "$V622_DIR/run_oscar_validation_v62.py"
 
           cp \
-            "$V622_DIR/run_hector_matched_forcing_v62.R" \
-            hector_work/run_hector_matched_forcing_v63.R
+            "$V622_DIR/run_oscar_validation_v62.py" \
+            run_oscar_validation_v62.py
 
-          cp \
-            fair-artifact/fair_matched_nonco2_forcing.csv \
-            hector_work/
+          echo "Pinned V62.2 OSCAR validation base restored."
 
-          cp \
-            fair-artifact/external_validation_net_co2_trajectory.csv \
-            hector_work/
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.9"
 
-          echo "Pinned V62.2 Hector script restored."
+      - name: Verify V63 OSCAR scripts
+        run: |
+          set -euo pipefail
 
-      - name: Patch Hector for true V63 2183 horizon
+          test -f run_oscar_matched_forcing_v63.py
+          test -f run_oscar_validation_v62.py
+
+          python -m py_compile \
+            run_oscar_matched_forcing_v63.py \
+            run_oscar_validation_v62.py
+
+          echo "V63 OSCAR Python syntax verified."
+
+      - name: Install OSCAR v3.3 runtime dependencies
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade 'pip<25'
+
+          pip install \
+            'numpy==1.23.3' \
+            'scipy==1.9.3' \
+            'pandas==1.5.3' \
+            'xarray==0.20.1' \
+            'matplotlib==3.7.5' \
+            'netCDF4==1.6.5' \
+            'h5netcdf==1.3.0' \
+            'h5py==3.10.0'
+
+      - name: Verify OSCAR Python dependencies
         run: |
           set -euo pipefail
 
           python - <<'PY'
-          from pathlib import Path
-          import re
+          import h5netcdf
+          import h5py
+          import matplotlib
+          import netCDF4
+          import numpy
+          import pandas
+          import scipy
+          import xarray
 
-          path = Path(
-              "hector_work/run_hector_matched_forcing_v63.R"
+          print("numpy:", numpy.__version__)
+          print("scipy:", scipy.__version__)
+          print("pandas:", pandas.__version__)
+          print("xarray:", xarray.__version__)
+          print("matplotlib:", matplotlib.__version__)
+          print("netCDF4:", netCDF4.__version__)
+          print("h5netcdf:", h5netcdf.__version__)
+          print("h5py:", h5py.__version__)
+
+          assert numpy.__version__ == "1.23.3"
+          assert scipy.__version__ == "1.9.3"
+          assert pandas.__version__ == "1.5.3"
+          assert xarray.__version__ == "0.20.1"
+
+          print("OSCAR Python dependencies verified.")
+          PY
+
+      - name: Fetch pinned official OSCAR v3.3 source
+        run: |
+          set -euo pipefail
+
+          rm -rf _oscar
+
+          git clone \
+            https://github.com/tgasser/OSCAR.git \
+            _oscar
+
+          git -C _oscar checkout \
+            --detach \
+            "$OSCAR_COMMIT"
+
+          ACTUAL="$(
+            git -C _oscar rev-parse HEAD
+          )"
+
+          test "$ACTUAL" = "$OSCAR_COMMIT"
+
+          echo "Pinned OSCAR source verified: $ACTUAL"
+
+      - name: Verify OSCAR parameter files
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import xarray as xr
+
+          path = (
+              "_oscar/input_data/parameters/"
+              "from_OSCARv2/ocean_CMIP5.nc"
           )
 
-          text = path.read_text(
-              encoding="utf-8"
-          )
+          ds = xr.open_dataset(path)
+
+          print(ds)
+
+          ds.close()
 
           print(
-              "Original 2300 references:",
-              text.count("2300")
-          )
-
-          # --------------------------------------------------
-          # 1. Remove V62's artificial extension of the
-          #    canonical trajectory from 2183 through 2300.
-          #    Regex is whitespace tolerant.
-          # --------------------------------------------------
-
-          extension_pattern = re.compile(
-              r"""
-              \n
-              \s*last\s*<-\s*x\[nrow\(x\),\s*\]
-              \s*
-              if\s*\(\s*max\(x\$year\)\s*<\s*2300\s*\)
-              \s*\{
-              .*?
-              \n\s*\}
-              \s*
-              (?=yrs\s*<-\s*as\.numeric\(x\$year\))
-              """,
-              re.VERBOSE | re.DOTALL,
-          )
-
-          text, n_extension = extension_pattern.subn(
-              "\n",
-              text,
-              count=1,
-          )
-
-          if n_extension != 1:
-              raise SystemExit(
-                  "Failed to remove exactly one "
-                  "V62 2183-to-2300 extension block. "
-                  f"Matches={n_extension}"
-              )
-
-          print(
-              "Removed trajectory extension block."
-          )
-
-          # --------------------------------------------------
-          # 2. Require actual trajectory to be 2026-2183.
-          # --------------------------------------------------
-
-          text, n_year_check = re.subn(
-              r"as\.numeric\(\s*2026\s*:\s*2300\s*\)",
-              "as.numeric(2026:2183)",
-              text,
-              count=1,
-          )
-
-          if n_year_check != 1:
-              raise SystemExit(
-                  "Failed to patch 2026:2300 year check."
-              )
-
-          # --------------------------------------------------
-          # 3. Match FaIR non-CO2 forcing only over
-          #    2027-2183.
-          # --------------------------------------------------
-
-          text, n_match = re.subn(
-              r"match_years\s*<-\s*2027\s*:\s*2300",
-              "match_years <- 2027:2183",
-              text,
-              count=1,
-          )
-
-          if n_match != 1:
-              raise SystemExit(
-                  "Failed to patch match_years."
-              )
-
-          # --------------------------------------------------
-          # 4. Stop Hector at 2183 rather than 2300.
-          # --------------------------------------------------
-
-          run_pattern = re.compile(
-              r"""
-              run
-              \s*\(
-              \s*core
-              \s*,\s*
-              2300
-              \s*\)
-              """,
-              re.VERBOSE,
-          )
-
-          text, n_run = run_pattern.subn(
-              "run(\n      core,\n      2183\n    )",
-              text,
-              count=1,
-          )
-
-          if n_run != 1:
-              raise SystemExit(
-                  "Failed to patch Hector run horizon."
-              )
-
-          # --------------------------------------------------
-          # 5. Replace the old milestone set.
-          # --------------------------------------------------
-
-          milestone_pattern = re.compile(
-              r"""
-              yy\s+in\s+c
-              \s*\(
-              \s*2040\s*,
-              \s*2100\s*,
-              \s*2156\s*,
-              \s*2184\s*,
-              \s*2200\s*,
-              \s*2300\s*
-              \)
-              """,
-              re.VERBOSE,
-          )
-
-          milestone_replacement = """yy in c(
-              2040,
-              2100,
-              2156,
-              2183
-            )"""
-
-          text, n_milestones = milestone_pattern.subn(
-              milestone_replacement,
-              text,
-              count=1,
-          )
-
-          if n_milestones != 1:
-              raise SystemExit(
-                  "Failed to patch milestone years."
-              )
-
-          # --------------------------------------------------
-          # 6. Update descriptive/error strings.
-          # --------------------------------------------------
-
-          text = text.replace(
-              "2026-2300",
-              "2026-2183"
-          )
-
-          text = text.replace(
-              "2027-2300",
-              "2027-2183"
-          )
-
-          text = text.replace(
-              "through 2300",
-              "through 2183"
-          )
-
-          text = text.replace(
-              "V62 removal-ON/OFF with FaIR-derived harmonized",
-              "V63 canonical removal-ON/OFF with FaIR-derived harmonized"
-          )
-
-          # --------------------------------------------------
-          # 7. There should be no scientific 2300 horizon
-          #    left in the V63 isolated copy.
-          # --------------------------------------------------
-
-          remaining = [
-              line
-              for line in text.splitlines()
-              if "2300" in line
-          ]
-
-          if remaining:
-              print(
-                  "Unexpected remaining 2300 references:"
-              )
-
-              for line in remaining:
-                  print(line)
-
-              raise SystemExit(
-                  "Unexpected 2300 references remain "
-                  "after V63 patch."
-              )
-
-          path.write_text(
-              text,
-              encoding="utf-8"
-          )
-
-          print(
-              "V63 Hector patch successful."
+              "OSCAR NetCDF parameter file successfully opened."
           )
           PY
 
-          grep -q \
-            'match_years <- 2027:2183' \
-            hector_work/run_hector_matched_forcing_v63.R
+      - name: Verify canonical OSCAR inputs
+        run: |
+          set -euo pipefail
 
-          grep -q \
-            'as.numeric(2026:2183)' \
-            hector_work/run_hector_matched_forcing_v63.R
+          python - <<'PY'
+          import pandas as pd
+          import numpy as np
 
-          grep -q \
-            '2183' \
-            hector_work/run_hector_matched_forcing_v63.R
+          traj = pd.read_csv(
+              "fair-artifact/"
+              "external_validation_net_co2_trajectory.csv"
+          ).sort_values("year")
 
-          if grep -q \
-            '2300' \
-            hector_work/run_hector_matched_forcing_v63.R
-          then
-            echo "ERROR: 2300 remains in V63 Hector script"
-            exit 1
+          forcing = pd.read_csv(
+              "fair-artifact/"
+              "fair_matched_nonco2_forcing.csv"
+          ).sort_values("year")
+
+          assert traj["year"].astype(int).tolist() == list(
+              range(2026, 2184)
+          )
+
+          assert forcing["year"].astype(int).tolist() == list(
+              range(2026, 2184)
+          )
+
+          assert np.isfinite(
+              forcing[
+                  "matched_nonco2_forcing_wm2"
+              ].to_numpy(float)
+          ).all()
+
+          total = float(
+              traj["cdr_gtco2"].sum()
+          )
+
+          peak = float(
+              traj["cdr_gtco2"].max()
+          )
+
+          assert abs(
+              total - 2013.8807318595145
+          ) < 1e-6
+
+          assert abs(
+              peak - 15.2
+          ) < 1e-9
+
+          assert float(
+              traj.loc[
+                  traj["year"] == 2026,
+                  "cdr_gtco2"
+              ].iloc[0]
+          ) == 0.0
+
+          print(
+              "Canonical OSCAR inputs verified."
+          )
+          print(
+              "2027-2183 cumulative CDR:",
+              total,
+              "GtCO2"
+          )
+          PY
+
+      - name: Run canonical OSCAR matched-forcing experiment
+        run: |
+          set -euo pipefail
+
+          rm -rf oscar_matched_results
+
+          python run_oscar_matched_forcing_v63.py \
+            --oscar-root "$GITHUB_WORKSPACE/_oscar" \
+            --trajectory "$GITHUB_WORKSPACE/fair-artifact/external_validation_net_co2_trajectory.csv" \
+            --forcing-target "$GITHUB_WORKSPACE/fair-artifact/fair_matched_nonco2_forcing.csv" \
+            --outdir "$GITHUB_WORKSPACE/oscar_matched_results" \
+            --nmc 200 \
+            --end-year 2183 \
+            --forcing-tol 1e-4 \
+            --max-iters 6 \
+            2>&1 | tee OSCAR_CANONICAL_CONSOLE.log
+
+      - name: Verify canonical OSCAR results
+        run: |
+          set -euo pipefail
+
+          test -f \
+            oscar_matched_results/oscar_matched_attribution.csv
+
+          test -f \
+            oscar_matched_results/oscar_reservoir_decomposition.csv
+
+          test -f \
+            oscar_matched_results/oscar_matched_timeseries.csv
+
+          test -f \
+            oscar_matched_results/oscar_forcing_match_audit.csv
+
+          test -f \
+            oscar_matched_results/oscar_matched_summary.json
+
+          python - <<'PY'
+          import json
+          import math
+          import pandas as pd
+          import numpy as np
+
+          root = "oscar_matched_results"
+
+          with open(
+              f"{root}/oscar_matched_summary.json",
+              encoding="utf-8",
+          ) as f:
+              summary = json.load(f)
+
+          attr = pd.read_csv(
+              f"{root}/oscar_matched_attribution.csv"
+          )
+
+          reservoir = pd.read_csv(
+              f"{root}/oscar_reservoir_decomposition.csv"
+          )
+
+          timeseries = pd.read_csv(
+              f"{root}/oscar_matched_timeseries.csv"
+          )
+
+          audit = pd.read_csv(
+              f"{root}/oscar_forcing_match_audit.csv"
+          )
+
+          assert summary["status"] == "PASS"
+
+          assert (
+              summary["experiment"]
+              == "V63_OSCAR_COMMON_NONCO2_MATCH_AND_RESERVOIR_DECOMPOSITION"
+          )
+
+          assert summary["oscar_version"] == "v3.3"
+
+          assert (
+              summary["oscar_pinned_commit"]
+              == "3ce008400e06363564e5981a35cbc32377d41d86"
+          )
+
+          assert summary["ensemble_members"] == 200
+          assert summary["seed"] == 6201
+          assert summary["years"] == [2027, 2183]
+
+          protocol = summary["forcing_protocol"]
+
+          tol = float(
+              protocol["tolerance_wm2"]
+          )
+
+          on_error = float(
+              protocol[
+                  "on_max_abs_median_error_wm2"
+              ]
+          )
+
+          off_error = float(
+              protocol[
+                  "off_max_abs_median_error_wm2"
+              ]
+          )
+
+          assert abs(tol - 1e-4) < 1e-15
+          assert on_error <= tol
+          assert off_error <= tol
+
+          canonical = float(
+              summary[
+                  "canonical_cdr_2027_2183_gtco2"
+              ]
+          )
+
+          assert abs(
+              canonical - 2013.8807318595145
+          ) < 1e-6
+
+          final_delta = float(
+              summary[
+                  "final_2183_delta_co2_p50_ppm"
+              ]
+          )
+
+          final_fraction = float(
+              summary[
+                  "final_2183_response_fraction_p50"
+              ]
+          )
+
+          assert math.isfinite(final_delta)
+          assert math.isfinite(final_fraction)
+          assert final_delta > 0.0
+          assert final_fraction > 0.0
+
+          gates = summary["gates"]
+
+          assert gates
+          assert all(
+              value is True
+              for value in gates.values()
+          )
+
+          expected_years = list(
+              range(2027, 2184)
+          )
+
+          for name, frame in (
+              ("attribution", attr),
+              ("reservoir", reservoir),
+              ("timeseries", timeseries),
+          ):
+              years = frame["year"].astype(int).tolist()
+
+              assert years == expected_years, (
+                  name,
+                  years[:3],
+                  years[-3:],
+              )
+
+              assert len(frame) == 157
+
+          assert set(
+              audit["case"].astype(str)
+          ) == {
+              "removal_ON",
+              "removal_OFF",
+          }
+
+          assert len(audit) >= 2
+
+          assert np.isfinite(
+              attr[
+                  [
+                      "cumulative_cdr_gtco2",
+                      "delta_co2_p05_ppm",
+                      "delta_co2_p50_ppm",
+                      "delta_co2_p95_ppm",
+                      "fraction_p05",
+                      "fraction_p50",
+                      "fraction_p95",
+                  ]
+              ].to_numpy(float)
+          ).all()
+
+          assert np.isfinite(
+              reservoir.select_dtypes(
+                  include=[np.number]
+              ).to_numpy(float)
+          ).all()
+
+          assert np.isfinite(
+              timeseries.select_dtypes(
+                  include=[np.number]
+              ).to_numpy(float)
+          ).all()
+
+          final_attr = attr.iloc[-1]
+
+          assert int(
+              final_attr["year"]
+          ) == 2183
+
+          assert abs(
+              float(
+                  final_attr[
+                      "cumulative_cdr_gtco2"
+                  ]
+              )
+              - 2013.8807318595145
+          ) < 1e-6
+
+          assert float(
+              final_attr["delta_co2_p50_ppm"]
+          ) > 0.0
+
+          assert float(
+              final_attr["fraction_p50"]
+          ) > 0.0
+
+          print(
+              "Canonical OSCAR v3.3 results verified."
+          )
+          print(
+              "ON forcing-match error:",
+              on_error,
+              "W/m2"
+          )
+          print(
+              "OFF forcing-match error:",
+              off_error,
+              "W/m2"
+          )
+          print(
+              "2183 median CO2 benefit:",
+              final_delta,
+              "ppm"
+          )
+          print(
+              "2183 median response fraction:",
+              final_fraction
+          )
+          PY
+
+      - name: Show OSCAR canonical summary
+        if: always()
+        run: |
+          if [ -f oscar_matched_results/oscar_matched_summary.json ]; then
+            cat oscar_matched_results/oscar_matched_summary.json
+          else
+            echo "OSCAR canonical summary was not generated."
           fi
 
-          echo "V63 Hector horizon patch verified."
-
-      - name: Set up R 4.5.1
-        uses: r-lib/actions/setup-r@v2
-        with:
-          r-version: "4.5.1"
-          use-public-rspm: true
-
-      - name: Install system libraries for Hector
+      - name: List OSCAR result files
+        if: always()
         run: |
-          set -euo pipefail
-
-          sudo apt-get update
-
-          sudo apt-get install -y \
-            libboost-dev \
-            libboost-filesystem-dev \
-            libboost-system-dev
-
-      - name: Install Hector 3.5.0
-        run: |
-          set -euo pipefail
-
-          Rscript -e '
-            install.packages(
-              c(
-                "Rcpp",
-                "BH",
-                "jsonlite"
-              ),
-              repos="https://cloud.r-project.org"
-            )
-          '
-
-          rm -rf /tmp/hector-v3.5.0
-
-          git clone \
-            --depth 1 \
-            --branch v3.5.0 \
-            https://github.com/JGCRI/hector.git \
-            /tmp/hector-v3.5.0
-
-          echo \
-            "Hector source commit: $(git -C /tmp/hector-v3.5.0 rev-parse HEAD)"
-
-          R CMD INSTALL \
-            --no-multiarch \
-            --with-keep.source \
-            /tmp/hector-v3.5.0
-
-          Rscript - <<'RS'
-          suppressPackageStartupMessages(
-            library(hector)
-          )
-
-          suppressPackageStartupMessages(
-            library(jsonlite)
-          )
-
-          version <- as.character(
-            packageVersion("hector")
-          )
-
-          cat(
-            "Installed Hector:",
-            version,
-            "\n"
-          )
-
-          stopifnot(
-            version == "3.5.0"
-          )
-          RS
-
-      - name: Verify Hector inputs and R syntax
-        run: |
-          set -euo pipefail
-
-          cd hector_work
-
-          test -f \
-            external_validation_net_co2_trajectory.csv
-
-          test -f \
-            fair_matched_nonco2_forcing.csv
-
-          test -f \
-            run_hector_matched_forcing_v63.R
-
-          Rscript -e '
-            parse(
-              file="run_hector_matched_forcing_v63.R"
-            );
-            cat(
-              "V63 Hector R syntax OK.\n"
-            )
-          '
-
-          Rscript - <<'RS'
-          traj <- read.csv(
-            "external_validation_net_co2_trajectory.csv",
-            check.names = FALSE
-          )
-
-          forcing <- read.csv(
-            "fair_matched_nonco2_forcing.csv",
-            check.names = FALSE
-          )
-
-          stopifnot(
-            nrow(traj) == 158
-          )
-
-          stopifnot(
-            identical(
-              as.numeric(traj$year),
-              as.numeric(2026:2183)
-            )
-          )
-
-          stopifnot(
-            nrow(forcing) == 158
-          )
-
-          stopifnot(
-            identical(
-              as.numeric(forcing$year),
-              as.numeric(2026:2183)
-            )
-          )
-
-          stopifnot(
-            all(
-              is.finite(
-                forcing$matched_nonco2_forcing_wm2
-              )
-            )
-          )
-
-          mass <- (
-            traj$gross_co2_gtco2 +
-            traj$permafrost_co2_gtco2 +
-            traj$stored_carbon_reversal_gtco2 -
-            traj$cdr_gtco2
-          )
-
-          mass_error <- max(
-            abs(
-              mass -
-              traj$net_co2_gtco2
-            )
-          )
-
-          stopifnot(
-            mass_error < 1e-9
-          )
-
-          total <- sum(
-            traj$cdr_gtco2
-          )
-
-          peak <- max(
-            traj$cdr_gtco2
-          )
-
-          stopifnot(
-            abs(
-              total -
-              2013.8807318595145
-            ) < 1e-6
-          )
-
-          stopifnot(
-            abs(
-              peak -
-              15.2
-            ) < 1e-9
-          )
-
-          cat(
-            "Trajectory and forcing inputs verified.\n"
-          )
-
-          cat(
-            "Canonical CDR:",
-            total,
-            "GtCO2\n"
-          )
-
-          cat(
-            "Peak CDR:",
-            peak,
-            "GtCO2/yr\n"
-          )
-          RS
-
-      - name: Run canonical Hector matched-forcing experiment
-        run: |
-          set -euo pipefail
-
-          cd hector_work
-
-          set -o pipefail
-
-          Rscript \
-            run_hector_matched_forcing_v63.R \
-            2>&1 \
-            | tee HECTOR_CANONICAL_CONSOLE.log
-
-      - name: Verify canonical Hector results
-        run: |
-          set -euo pipefail
-
-          cd hector_work
-
-          test -f hector_matched_attribution.csv
-          test -f hector_matched_timeseries.csv
-          test -f hector_matched_summary.json
-
-          Rscript - <<'RS'
-          suppressPackageStartupMessages(
-            library(jsonlite)
-          )
-
-          s <- read_json(
-            "hector_matched_summary.json",
-            simplifyVector = TRUE
-          )
-
-          a <- read.csv(
-            "hector_matched_attribution.csv",
-            check.names = FALSE
-          )
-
-          z <- read.csv(
-            "hector_matched_timeseries.csv",
-            check.names = FALSE
-          )
-
-          stopifnot(
-            s$model == "Hector"
-          )
-
-          stopifnot(
-            s$version == "3.5.0"
-          )
-
-          stopifnot(
-            nrow(a) == 158
-          )
-
-          stopifnot(
-            identical(
-              as.numeric(a$year),
-              as.numeric(2026:2183)
-            )
-          )
-
-          stopifnot(
-            nrow(z) == 158
-          )
-
-          stopifnot(
-            identical(
-              as.numeric(z$year),
-              as.numeric(2026:2183)
-            )
-          )
-
-          required <- c(
-            "year",
-            "co2_on_ppm",
-            "co2_off_ppm",
-            "delta_co2_ppm",
-            "cumulative_cdr_gtco2",
-            "apparent_response_fraction"
-          )
-
-          stopifnot(
-            all(
-              required %in%
-              names(a)
-            )
-          )
-
-          tol <- as.numeric(
-            s$forcing_match_tolerance_wm2
-          )
-
-          on_error <- as.numeric(
-            s$forcing_match_max_abs_on_wm2
-          )
-
-          off_error <- as.numeric(
-            s$forcing_match_max_abs_off_wm2
-          )
-
-          stopifnot(
-            is.finite(tol)
-          )
-
-          stopifnot(
-            is.finite(on_error)
-          )
-
-          stopifnot(
-            is.finite(off_error)
-          )
-
-          stopifnot(
-            on_error <= tol
-          )
-
-          stopifnot(
-            off_error <= tol
-          )
-
-          stopifnot(
-            as.numeric(
-              s$common_state_2026_co2_abs_error_ppm
-            ) <= 1e-8
-          )
-
-          stopifnot(
-            as.numeric(
-              s$common_state_2026_tas_abs_error_c
-            ) <= 1e-8
-          )
-
-          final <- a[
-            a$year == 2183,
-          ]
-
-          stopifnot(
-            nrow(final) == 1
-          )
-
-          terminal_delta <- as.numeric(
-            final$delta_co2_ppm
-          )
-
-          terminal_fraction <- as.numeric(
-            final$apparent_response_fraction
-          )
-
-          terminal_cdr <- as.numeric(
-            final$cumulative_cdr_gtco2
-          )
-
-          stopifnot(
-            is.finite(
-              terminal_delta
-            )
-          )
-
-          stopifnot(
-            is.finite(
-              terminal_fraction
-            )
-          )
-
-          stopifnot(
-            terminal_delta > 0
-          )
-
-          stopifnot(
-            terminal_fraction > 0
-          )
-
-          stopifnot(
-            abs(
-              terminal_cdr -
-              2013.8807318595145
-            ) < 1e-6
-          )
-
-          stopifnot(
-            abs(
-              as.numeric(
-                s$canonical_cdr_2026_2183_gtco2
-              ) -
-              2013.8807318595145
-            ) < 1e-6
-          )
-
-          stopifnot(
-            abs(
-              as.numeric(
-                s$peak_cdr_2026_2183_gtco2_per_year
-              ) -
-              15.2
-            ) < 1e-9
-          )
-
-          cat("\n")
-          cat(
-            "=======================================\n"
-          )
-          cat(
-            "V63 CANONICAL HECTOR EXPERIMENT PASSED\n"
-          )
-          cat(
-            "=======================================\n"
-          )
-
-          cat(
-            "Hector version:",
-            s$version,
-            "\n"
-          )
-
-          cat(
-            "Terminal year:",
-            final$year,
-            "\n"
-          )
-
-          cat(
-            "Cumulative CDR:",
-            terminal_cdr,
-            "GtCO2\n"
-          )
-
-          cat(
-            "Terminal CO2 reduction:",
-            terminal_delta,
-            "ppm\n"
-          )
-
-          cat(
-            "Terminal atmospheric response:",
-            terminal_fraction,
-            "\n"
-          )
-
-          cat(
-            "ON forcing error:",
-            on_error,
-            "W/m2\n"
-          )
-
-          cat(
-            "OFF forcing error:",
-            off_error,
-            "W/m2\n"
-          )
-
-          cat(
-            "Tolerance:",
-            tol,
-            "W/m2\n"
-          )
-          RS
-
-      - name: Upload canonical Hector results
+          if [ -d oscar_matched_results ]; then
+            find oscar_matched_results -maxdepth 2 -type f -print
+          else
+            echo "No oscar_matched_results directory exists."
+          fi
+
+      - name: Upload canonical OSCAR artifacts
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: V63-Canonical-Hector
-          retention-days: 90
-          if-no-files-found: error
+          name: V63-Canonical-OSCAR
           path: |
-            hector_work/hector_matched_attribution.csv
-            hector_work/hector_matched_timeseries.csv
-            hector_work/hector_matched_summary.json
-            hector_work/HECTOR_CANONICAL_CONSOLE.log
-            hector_work/fair_matched_nonco2_forcing.csv
-            hector_work/external_validation_net_co2_trajectory.csv
-            hector_work/run_hector_matched_forcing_v63.R
+            oscar_matched_results/
+            OSCAR_CANONICAL_CONSOLE.log
+            fair-artifact/fair_matched_nonco2_forcing.csv
+            fair-artifact/external_validation_net_co2_trajectory.csv
+            run_oscar_matched_forcing_v63.py
+            run_oscar_validation_v62.py
+          if-no-files-found: warn
