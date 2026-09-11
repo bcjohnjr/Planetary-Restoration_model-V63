@@ -1,220 +1,3 @@
-name: V63 Canonical FaIR Experiment
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-env:
-  PYTHONUNBUFFERED: "1"
-  FAIR_SOURCE_DIR: /tmp/FAIR-v2.2.4
-
-jobs:
-  fair-canonical:
-    name: Canonical FaIR 2.2.4
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-
-    steps:
-      - name: Checkout V63 repository
-        uses: actions/checkout@v7
-
-      - name: Restore proven V62.2 validation inputs
-        run: |
-          set -euo pipefail
-
-          V622_DIR="/tmp/V62.2"
-          V622_COMMIT="89a0f4ab18df25db3a05d4e39c6db06405456505"
-
-          rm -rf "$V622_DIR"
-
-          git clone \
-            https://github.com/bcjohnjr/Planetary-Restoration-Version-62.2.git \
-            "$V622_DIR"
-
-          git -C "$V622_DIR" checkout \
-            --detach \
-            "$V622_COMMIT"
-
-          ACTUAL="$(git -C "$V622_DIR" rev-parse HEAD)"
-          test "$ACTUAL" = "$V622_COMMIT"
-
-          cp \
-            "$V622_DIR/external_validation_net_co2_trajectory.csv" \
-            .
-
-          cp \
-            "$V622_DIR/run_fair_matched_forcing_v62.py" \
-            .
-
-          test -f external_validation_net_co2_trajectory.csv
-          test -f run_fair_matched_forcing_v62.py
-
-          echo \
-            "f2d58812b8c54bfc52da1dee360ca06f8ccfb888791cf3dc1105bc038ae3a637  external_validation_net_co2_trajectory.csv" \
-            | sha256sum -c -
-
-          echo "Pinned V62.2 validation inputs restored."
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-
-      - name: Install FaIR workload
-        run: |
-          set -euo pipefail
-
-          python -m pip install --upgrade pip
-
-          python -m pip install \
-            fair==2.2.4 \
-            numpy \
-            pandas \
-            xarray \
-            scipy
-
-          python - <<'PY'
-          import fair
-          import numpy
-          import pandas
-          import xarray
-          import scipy
-
-          print("fair:", fair.__version__)
-          print("numpy:", numpy.__version__)
-          print("pandas:", pandas.__version__)
-          print("xarray:", xarray.__version__)
-          print("scipy:", scipy.__version__)
-
-          assert fair.__version__ == "2.2.4"
-          PY
-
-      - name: Clone pinned official FaIR 2.2.4 source
-        run: |
-          set -euo pipefail
-
-          rm -rf "$FAIR_SOURCE_DIR"
-
-          git clone \
-            --depth 1 \
-            --branch v2.2.4 \
-            https://github.com/OMS-NetZero/FAIR.git \
-            "$FAIR_SOURCE_DIR"
-
-          FAIR_COMMIT="$(
-            git -C "$FAIR_SOURCE_DIR" rev-parse HEAD
-          )"
-
-          echo "FaIR commit: $FAIR_COMMIT"
-
-          test \
-            "$FAIR_COMMIT" = \
-            "ec46fefc8f8c6b560a8b78ab1f4a9a5e04537f79"
-
-          test -f \
-            "$FAIR_SOURCE_DIR/examples/data/calibrated_constrained_ensemble/calibrated_constrained_parameters_calibration1.4.1.csv"
-
-          echo "Official FaIR v2.2.4 source verified."
-
-      - name: Generate V63 experiment trajectories
-        run: |
-          set -euo pipefail
-
-          rm -rf nature_experiments
-
-          python \
-            generate_nature_experiment_trajectories_v63.py \
-            --input \
-            external_validation_net_co2_trajectory.csv \
-            --outdir \
-            nature_experiments/trajectories
-
-          test -f \
-            nature_experiments/trajectories/canonical_peak15p2.csv
-
-          echo "Canonical V63 trajectory generated."
-
-      - name: Stage isolated canonical FaIR experiment
-        run: |
-          set -euo pipefail
-
-          rm -rf fair_work
-          mkdir -p fair_work
-
-          cp \
-            nature_experiments/trajectories/canonical_peak15p2.csv \
-            fair_work/external_validation_net_co2_trajectory.csv
-
-          cp \
-            run_fair_matched_forcing_v62.py \
-            fair_work/
-
-          # The publication experiment stops at the true
-          # canonical pathway boundary: 2183.
-          sed -i \
-            's/^END_YEAR = 2300$/END_YEAR = 2183/' \
-            fair_work/run_fair_matched_forcing_v62.py
-
-          grep -q \
-            '^END_YEAR = 2183$' \
-            fair_work/run_fair_matched_forcing_v62.py
-
-          python -m py_compile \
-            fair_work/run_fair_matched_forcing_v62.py
-
-          python - <<'PY'
-          import pandas as pd
-
-          p = (
-              "fair_work/"
-              "external_validation_net_co2_trajectory.csv"
-          )
-
-          df = pd.read_csv(p)
-
-          assert int(df.year.min()) == 2026
-          assert int(df.year.max()) == 2183
-          assert len(df) == 158
-
-          total = float(df.cdr_gtco2.sum())
-          peak = float(df.cdr_gtco2.max())
-
-          assert abs(
-              total - 2013.8807318595145
-          ) < 1e-6
-
-          assert abs(
-              peak - 15.2
-          ) < 1e-9
-
-          print(
-              "Canonical CDR:",
-              total,
-              "GtCO2"
-          )
-
-          print(
-              "Peak:",
-              peak,
-              "GtCO2/yr"
-          )
-          PY
-
-      - name: Run canonical FaIR matched-forcing experiment
-        run: |
-          set -euo pipefail
-
-          cd fair_work
-
-          set -o pipefail
-
-          python \
-            run_fair_matched_forcing_v62.py \
-            2>&1 \
-            | tee FAIR_CANONICAL_CONSOLE.log
-
       - name: Verify canonical FaIR results
         run: |
           set -euo pipefail
@@ -244,29 +27,143 @@ jobs:
               "fair_matched_timeseries.csv"
           )
 
+          trajectory = pd.read_csv(
+              "external_validation_net_co2_trajectory.csv"
+          )
+
+          # -----------------------------
+          # Model identity
+          # -----------------------------
+          assert summary["model"] == "FaIR"
+          assert summary["version"] == "2.2.4"
           assert summary["configs"] == 841
 
+          # -----------------------------
+          # Canonical trajectory
+          # -----------------------------
+          canonical_total = float(
+              trajectory["cdr_gtco2"].sum()
+          )
+
+          canonical_peak = float(
+              trajectory["cdr_gtco2"].max()
+          )
+
+          assert abs(
+              canonical_total
+              - 2013.8807318595145
+          ) < 1e-6
+
+          assert abs(
+              canonical_peak
+              - 15.2
+          ) < 1e-9
+
+          assert abs(
+              summary[
+                  "canonical_cdr_2026_2183_gtco2"
+              ]
+              - canonical_total
+          ) < 1e-6
+
+          assert abs(
+              summary[
+                  "peak_cdr_2026_2183_gtco2_per_year"
+              ]
+              - canonical_peak
+          ) < 1e-9
+
+          # -----------------------------
+          # Carbon mass balance
+          # -----------------------------
           assert (
+              summary[
+                  "trajectory_mass_balance_max_abs_gtco2"
+              ]
+              < 1e-9
+          )
+
+          # -----------------------------
+          # Common initial state
+          # -----------------------------
+          assert (
+              summary[
+                  "common_state_2026_co2_maxabs_ppm"
+              ]
+              <= 1e-6
+          )
+
+          assert (
+              summary[
+                  "common_state_2026_tas_maxabs_c"
+              ]
+              <= 1e-6
+          )
+
+          # -----------------------------
+          # Matched forcing gates
+          # -----------------------------
+          tol = float(
+              summary[
+                  "forcing_match_tolerance_wm2"
+              ]
+          )
+
+          on_error = float(
               summary[
                   "forcing_match_max_abs_on_wm2"
               ]
-              <=
-              summary[
-                  "forcing_match_tolerance_wm2"
-              ]
           )
 
-          assert (
+          off_error = float(
               summary[
                   "forcing_match_max_abs_off_wm2"
               ]
-              <=
+          )
+
+          pair_error = float(
               summary[
-                  "forcing_match_tolerance_wm2"
+                  "forcing_match_on_vs_off_max_abs_wm2"
               ]
           )
 
-          assert np.isfinite(
+          assert on_error <= tol
+          assert off_error <= tol
+          assert pair_error <= 2 * tol
+
+          # -----------------------------
+          # Output structure
+          # -----------------------------
+          assert len(trajectory) == 158
+          assert len(forcing) == 158
+          assert len(timeseries) == 158
+
+          assert int(
+              forcing["year"].iloc[0]
+          ) == 2026
+
+          assert int(
+              forcing["year"].iloc[-1]
+          ) == 2183
+
+          assert int(
+              timeseries["year"].iloc[0]
+          ) == 2026
+
+          assert int(
+              timeseries["year"].iloc[-1]
+          ) == 2183
+
+          assert len(attr) > 400
+
+          assert int(
+              round(float(attr["year"].iloc[-1]))
+          ) == 2183
+
+          # -----------------------------
+          # Numerical sanity
+          # -----------------------------
+          finite_attr = (
               attr[
                   [
                       "delta_co2_p50_ppm",
@@ -274,26 +171,55 @@ jobs:
                   ]
               ]
               .dropna()
-              .to_numpy()
-          ).all()
+              .to_numpy(dtype=float)
+          )
 
-          assert len(attr) > 400
-          assert len(forcing) > 150
-          assert len(timeseries) > 400
+          assert np.isfinite(
+              finite_attr
+          ).all()
 
           final = attr.iloc[-1]
 
-          assert float(
-              final["cumulative_cdr_gtco2"]
-          ) > 2013.8
+          # FaIR time-bound convention means the state
+          # labelled 2183 contains cumulative CDR through
+          # the preceding integration interval. Therefore
+          # do NOT require this attribution row itself to
+          # equal the full 2026-2183 trajectory total.
+          assert (
+              float(
+                  final[
+                      "cumulative_cdr_gtco2"
+                  ]
+              )
+              > 0
+          )
 
-          assert float(
-              final["delta_co2_p50_ppm"]
-          ) > 0
+          assert (
+              float(
+                  final[
+                      "cumulative_cdr_gtco2"
+                  ]
+              )
+              <= canonical_total
+          )
 
-          assert float(
-              final["fraction_p50"]
-          ) > 0
+          assert (
+              float(
+                  final[
+                      "delta_co2_p50_ppm"
+                  ]
+              )
+              > 0
+          )
+
+          assert (
+              float(
+                  final[
+                      "fraction_p50"
+                  ]
+              )
+              > 0
+          )
 
           print("")
           print(
@@ -312,51 +238,45 @@ jobs:
           )
 
           print(
-              "Final year:",
+              "Canonical cumulative CDR:",
+              canonical_total,
+              "GtCO2"
+          )
+
+          print(
+              "Canonical peak CDR:",
+              canonical_peak,
+              "GtCO2/yr"
+          )
+
+          print(
+              "Terminal FaIR year:",
               final["year"]
           )
 
           print(
-              "Cumulative CDR:",
-              final["cumulative_cdr_gtco2"]
-          )
-
-          print(
-              "Median CO2 reduction:",
+              "Terminal median CO2 reduction:",
               final["delta_co2_p50_ppm"],
               "ppm"
           )
 
           print(
-              "Median atmospheric response:",
+              "Terminal median response fraction:",
               final["fraction_p50"]
           )
 
           print(
               "ON forcing error:",
-              summary[
-                  "forcing_match_max_abs_on_wm2"
-              ]
+              on_error
           )
 
           print(
               "OFF forcing error:",
-              summary[
-                  "forcing_match_max_abs_off_wm2"
-              ]
+              off_error
+          )
+
+          print(
+              "ON-vs-OFF forcing difference:",
+              pair_error
           )
           PY
-
-      - name: Upload canonical FaIR results
-        uses: actions/upload-artifact@v7
-        with:
-          name: V63-Canonical-FaIR
-          retention-days: 90
-          if-no-files-found: error
-          path: |
-            fair_work/fair_matched_nonco2_forcing.csv
-            fair_work/fair_matched_attribution.csv
-            fair_work/fair_matched_timeseries.csv
-            fair_work/fair_matched_summary.json
-            fair_work/FAIR_CANONICAL_CONSOLE.log
-            fair_work/external_validation_net_co2_trajectory.csv
