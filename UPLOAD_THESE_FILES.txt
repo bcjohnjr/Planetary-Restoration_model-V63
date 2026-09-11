@@ -1,0 +1,17 @@
+V63 Nature Candidate Experiments
+
+Upload/copy these files into the existing repository at the exact paths shown:
+
+/generate_nature_experiment_trajectories_v63.py
+/compare_schedule_case_v63.py
+/run_oscar_matched_forcing_v63.py
+/synthesize_nature_experiments_v63.py
+/NATURE_EXPERIMENT_PROTOCOL_V63.md
+/.github/workflows/nature-candidate-experiments-v63.yml
+
+Do not replace or modify the existing validated V62.2 baseline files.
+
+After all six files are present, open GitHub Actions and manually run:
+V63 Nature Candidate Experiments
+
+The workflow is intentionally workflow_dispatch-only and will not start merely from uploading the files.
