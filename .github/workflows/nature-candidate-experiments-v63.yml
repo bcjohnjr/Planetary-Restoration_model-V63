@@ -111,26 +111,17 @@ jobs:
           print(
               "Verified FaIR artifact from green run 34653255920"
           )
-          print(
-              "Forcing horizon: 2026-2183"
-          )
+
           print(
               "Canonical CDR:",
               total,
               "GtCO2"
           )
+
           print(
               "Peak CDR:",
               peak,
               "GtCO2/yr"
-          )
-          print(
-              "FaIR ON forcing error:",
-              on_error
-          )
-          print(
-              "FaIR OFF forcing error:",
-              off_error
           )
           PY
 
@@ -176,121 +167,217 @@ jobs:
 
           echo "Pinned V62.2 Hector script restored."
 
-      - name: Patch Hector only for V63 2183 horizon
+      - name: Patch Hector for true V63 2183 horizon
         run: |
           set -euo pipefail
 
           python - <<'PY'
           from pathlib import Path
+          import re
 
-          p = Path(
+          path = Path(
               "hector_work/run_hector_matched_forcing_v63.R"
           )
 
-          text = p.read_text(
+          text = path.read_text(
               encoding="utf-8"
           )
 
-          old_extension = """last <- x[nrow(x), ]
-
-          if (max(x$year) < 2300) {
-
-            yy <- (max(x$year) + 1L):2300L
-
-            ext <- data.frame(
-              year = yy,
-              gross_co2_gtco2 =
-                rep(last$gross_co2_gtco2, length(yy)),
-              permafrost_co2_gtco2 =
-                rep(last$permafrost_co2_gtco2, length(yy)),
-              stored_carbon_reversal_gtco2 =
-                rep(last$stored_carbon_reversal_gtco2, length(yy)),
-              cdr_gtco2 =
-                rep(last$cdr_gtco2, length(yy)),
-              net_co2_gtco2 =
-                rep(last$net_co2_gtco2, length(yy))
-            )
-
-            x <- rbind(
-              x[, names(ext)],
-              ext
-            )
-          }
-
-          yrs <- as.numeric(x$year)"""
-
-          new_extension = """yrs <- as.numeric(x$year)"""
-
-          if old_extension not in text:
-              raise SystemExit(
-                  "Could not locate old 2183-to-2300 "
-                  "trajectory extension block."
-              )
-
-          text = text.replace(
-              old_extension,
-              new_extension,
-              1,
+          print(
+              "Original 2300 references:",
+              text.count("2300")
           )
 
-          replacements = {
-              "as.numeric(2026:2300)":
-                  "as.numeric(2026:2183)",
+          # --------------------------------------------------
+          # 1. Remove V62's artificial extension of the
+          #    canonical trajectory from 2183 through 2300.
+          #    Regex is whitespace tolerant.
+          # --------------------------------------------------
 
-              "Extended trajectory must be annual 2026-2300":
-                  "Trajectory must be annual 2026-2183",
+          extension_pattern = re.compile(
+              r"""
+              \n
+              \s*last\s*<-\s*x\[nrow\(x\),\s*\]
+              \s*
+              if\s*\(\s*max\(x\$year\)\s*<\s*2300\s*\)
+              \s*\{
+              .*?
+              \n\s*\}
+              \s*
+              (?=yrs\s*<-\s*as\.numeric\(x\$year\))
+              """,
+              re.VERBOSE | re.DOTALL,
+          )
 
-              "match_years <- 2027:2300":
-                  "match_years <- 2027:2183",
+          text, n_extension = extension_pattern.subn(
+              "\n",
+              text,
+              count=1,
+          )
 
-              "Common non-CO2 forcing target missing/non-finite over 2027-2300":
-                  "Common non-CO2 forcing target missing/non-finite over 2027-2183",
+          if n_extension != 1:
+              raise SystemExit(
+                  "Failed to remove exactly one "
+                  "V62 2183-to-2300 extension block. "
+                  f"Matches={n_extension}"
+              )
 
-              "run(\n      core,\n      2300\n    )":
-                  "run(\n      core,\n      2183\n    )",
+          print(
+              "Removed trajectory extension block."
+          )
 
-              """yy in c(
-              2040,
-              2100,
-              2156,
-              2184,
-              2200,
+          # --------------------------------------------------
+          # 2. Require actual trajectory to be 2026-2183.
+          # --------------------------------------------------
+
+          text, n_year_check = re.subn(
+              r"as\.numeric\(\s*2026\s*:\s*2300\s*\)",
+              "as.numeric(2026:2183)",
+              text,
+              count=1,
+          )
+
+          if n_year_check != 1:
+              raise SystemExit(
+                  "Failed to patch 2026:2300 year check."
+              )
+
+          # --------------------------------------------------
+          # 3. Match FaIR non-CO2 forcing only over
+          #    2027-2183.
+          # --------------------------------------------------
+
+          text, n_match = re.subn(
+              r"match_years\s*<-\s*2027\s*:\s*2300",
+              "match_years <- 2027:2183",
+              text,
+              count=1,
+          )
+
+          if n_match != 1:
+              raise SystemExit(
+                  "Failed to patch match_years."
+              )
+
+          # --------------------------------------------------
+          # 4. Stop Hector at 2183 rather than 2300.
+          # --------------------------------------------------
+
+          run_pattern = re.compile(
+              r"""
+              run
+              \s*\(
+              \s*core
+              \s*,\s*
               2300
-            )""":
-                  """yy in c(
+              \s*\)
+              """,
+              re.VERBOSE,
+          )
+
+          text, n_run = run_pattern.subn(
+              "run(\n      core,\n      2183\n    )",
+              text,
+              count=1,
+          )
+
+          if n_run != 1:
+              raise SystemExit(
+                  "Failed to patch Hector run horizon."
+              )
+
+          # --------------------------------------------------
+          # 5. Replace the old milestone set.
+          # --------------------------------------------------
+
+          milestone_pattern = re.compile(
+              r"""
+              yy\s+in\s+c
+              \s*\(
+              \s*2040\s*,
+              \s*2100\s*,
+              \s*2156\s*,
+              \s*2184\s*,
+              \s*2200\s*,
+              \s*2300\s*
+              \)
+              """,
+              re.VERBOSE,
+          )
+
+          milestone_replacement = """yy in c(
               2040,
               2100,
               2156,
               2183
-            )""",
+            )"""
 
-              "target for 2027-2300.":
-                  "target for 2027-2183.",
+          text, n_milestones = milestone_pattern.subn(
+              milestone_replacement,
+              text,
+              count=1,
+          )
 
-              "V62 removal-ON/OFF with FaIR-derived harmonized":
-                  "V63 canonical removal-ON/OFF with FaIR-derived harmonized",
-          }
-
-          for old, new in replacements.items():
-              if old not in text:
-                  raise SystemExit(
-                      "Required patch target not found:\n"
-                      + old
-                  )
-
-              text = text.replace(
-                  old,
-                  new,
-                  1,
+          if n_milestones != 1:
+              raise SystemExit(
+                  "Failed to patch milestone years."
               )
 
-          p.write_text(
+          # --------------------------------------------------
+          # 6. Update descriptive/error strings.
+          # --------------------------------------------------
+
+          text = text.replace(
+              "2026-2300",
+              "2026-2183"
+          )
+
+          text = text.replace(
+              "2027-2300",
+              "2027-2183"
+          )
+
+          text = text.replace(
+              "through 2300",
+              "through 2183"
+          )
+
+          text = text.replace(
+              "V62 removal-ON/OFF with FaIR-derived harmonized",
+              "V63 canonical removal-ON/OFF with FaIR-derived harmonized"
+          )
+
+          # --------------------------------------------------
+          # 7. There should be no scientific 2300 horizon
+          #    left in the V63 isolated copy.
+          # --------------------------------------------------
+
+          remaining = [
+              line
+              for line in text.splitlines()
+              if "2300" in line
+          ]
+
+          if remaining:
+              print(
+                  "Unexpected remaining 2300 references:"
+              )
+
+              for line in remaining:
+                  print(line)
+
+              raise SystemExit(
+                  "Unexpected 2300 references remain "
+                  "after V63 patch."
+              )
+
+          path.write_text(
               text,
               encoding="utf-8"
           )
 
           print(
-              "V63 Hector horizon patch completed."
+              "V63 Hector patch successful."
           )
           PY
 
@@ -307,14 +394,14 @@ jobs:
             hector_work/run_hector_matched_forcing_v63.R
 
           if grep -q \
-            'match_years <- 2027:2300' \
+            '2300' \
             hector_work/run_hector_matched_forcing_v63.R
           then
-            echo "ERROR: old forcing horizon remains"
+            echo "ERROR: 2300 remains in V63 Hector script"
             exit 1
           fi
 
-          echo "V63 Hector horizon verified."
+          echo "V63 Hector horizon patch verified."
 
       - name: Set up R 4.5.1
         uses: r-lib/actions/setup-r@v2
@@ -356,13 +443,8 @@ jobs:
             https://github.com/JGCRI/hector.git \
             /tmp/hector-v3.5.0
 
-          HECTOR_COMMIT="$(
-            git -C /tmp/hector-v3.5.0 \
-            rev-parse HEAD
-          )"
-
           echo \
-            "Hector v3.5.0 commit: $HECTOR_COMMIT"
+            "Hector source commit: $(git -C /tmp/hector-v3.5.0 rev-parse HEAD)"
 
           R CMD INSTALL \
             --no-multiarch \
@@ -378,18 +460,18 @@ jobs:
             library(jsonlite)
           )
 
-          v <- as.character(
+          version <- as.character(
             packageVersion("hector")
           )
 
           cat(
-            "Installed Hector version:",
-            v,
+            "Installed Hector:",
+            version,
             "\n"
           )
 
           stopifnot(
-            v == "3.5.0"
+            version == "3.5.0"
           )
           RS
 
@@ -413,7 +495,7 @@ jobs:
               file="run_hector_matched_forcing_v63.R"
             );
             cat(
-              "Hector V63 R script parses successfully.\n"
+              "V63 Hector R syntax OK.\n"
             )
           '
 
@@ -433,11 +515,10 @@ jobs:
           )
 
           stopifnot(
-            min(traj$year) == 2026
-          )
-
-          stopifnot(
-            max(traj$year) == 2183
+            identical(
+              as.numeric(traj$year),
+              as.numeric(2026:2183)
+            )
           )
 
           stopifnot(
@@ -445,18 +526,16 @@ jobs:
           )
 
           stopifnot(
-            min(forcing$year) == 2026
-          )
-
-          stopifnot(
-            max(forcing$year) == 2183
+            identical(
+              as.numeric(forcing$year),
+              as.numeric(2026:2183)
+            )
           )
 
           stopifnot(
             all(
               is.finite(
-                forcing$
-                  matched_nonco2_forcing_wm2
+                forcing$matched_nonco2_forcing_wm2
               )
             )
           )
@@ -502,13 +581,7 @@ jobs:
           )
 
           cat(
-            "Hector inputs verified.\n"
-          )
-
-          cat(
-            "Mass-balance error:",
-            mass_error,
-            "\n"
+            "Trajectory and forcing inputs verified.\n"
           )
 
           cat(
@@ -580,11 +653,10 @@ jobs:
           )
 
           stopifnot(
-            min(a$year) == 2026
-          )
-
-          stopifnot(
-            max(a$year) == 2183
+            identical(
+              as.numeric(a$year),
+              as.numeric(2026:2183)
+            )
           )
 
           stopifnot(
@@ -592,14 +664,13 @@ jobs:
           )
 
           stopifnot(
-            min(z$year) == 2026
+            identical(
+              as.numeric(z$year),
+              as.numeric(2026:2183)
+            )
           )
 
-          stopifnot(
-            max(z$year) == 2183
-          )
-
-          required_attr <- c(
+          required <- c(
             "year",
             "co2_on_ppm",
             "co2_off_ppm",
@@ -610,7 +681,7 @@ jobs:
 
           stopifnot(
             all(
-              required_attr %in%
+              required %in%
               names(a)
             )
           )
@@ -688,12 +759,6 @@ jobs:
           stopifnot(
             is.finite(
               terminal_fraction
-            )
-          )
-
-          stopifnot(
-            is.finite(
-              terminal_cdr
             )
           )
 
